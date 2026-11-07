@@ -11,7 +11,7 @@
   },
   "source": {
     "url": "https://github.com/LibreDWG/libredwg/releases/download/0.14.8869/libredwg-0.14.8869.tar.xz",
-    "sha256": "auto",
+    "sha256": "c2726241e177183dc9cc05ec7f63fb7f74efb3fe6e8bf22e3e91c79a72028a1b",
     "archive": "libredwg-0.14.8869.tar.xz",
     "gnu_mirror": "https://ftp.gnu.org/gnu/libredwg/libredwg-0.14.tar.xz"
   }
