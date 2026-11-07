@@ -1,0 +1,18 @@
+{
+  "_comment": "SPDX-License-Identifier: GPL-3.0-or-later. Exact LibreDWG build used by IloveCAD. Digests are filled/verified by scripts/fetch_libredwg.py.",
+  "version": "0.14.8869",
+  "published_at": "2026-11-07T14:45:56Z",
+  "min_required": "0.14.1",
+  "target_dwg_version": "AC1018",
+  "windows": {
+    "url": "https://github.com/LibreDWG/libredwg/releases/download/0.14.8869/libredwg-0.14.8869-win64.zip",
+    "sha256": "4afcd34b05673d703d692ad066faf1b64f3b68ab94d8ef8ed9bde32c05716c83",
+    "archive": "libredwg-0.14.8869-win64.zip"
+  },
+  "source": {
+    "url": "https://github.com/LibreDWG/libredwg/releases/download/0.14.8869/libredwg-0.14.8869.tar.xz",
+    "sha256": "auto",
+    "archive": "libredwg-0.14.8869.tar.xz",
+    "gnu_mirror": "https://ftp.gnu.org/gnu/libredwg/libredwg-0.14.tar.xz"
+  }
+}

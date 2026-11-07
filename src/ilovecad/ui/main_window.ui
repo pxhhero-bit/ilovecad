@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>1440</width><height>900</height></rect>
+  </property>
+  <property name="windowTitle">
+   <string>IloveCAD — 2D 图纸查看与轻量编辑</string>
+  </property>
+  <property name="styleSheet">
+   <string notr="true">QMainWindow{background:#f5f6f8;} QToolButton{min-width:74px;padding:4px;border:1px solid transparent;border-radius:4px;} QToolButton:hover{background:#e8eef8;border:1px solid #b9cbe4;} QTabWidget::pane{border:0;border-top:1px solid #d7dce4;} QTreeWidget,QListWidget,QTextBrowser{background:#ffffff;border:1px solid #d7dce4;}</string>
+  </property>
+  <widget class="QWidget" name="centralwidget">
+   <layout class="QVBoxLayout" name="rootLayout">
+    <property name="spacing"><number>2</number></property>
+    <property name="leftMargin"><number>4</number></property>
+    <property name="rightMargin"><number>4</number></property>
+    <property name="topMargin"><number>4</number></property>
+    <property name="bottomMargin"><number>2</number></property>
+    <item>
+     <widget class="QTabWidget" name="ribbonTabs">
+      <property name="maximumSize"><size><width>16777215</width><height>106</height></size></property>
+      <property name="tabPosition"><enum>QTabWidget::North</enum></property>
+      <widget class="QWidget" name="tabFile">
+       <attribute name="title"><string>文件</string></attribute>
+       <layout class="QHBoxLayout" name="layoutFile">
+        <item><widget class="QToolButton" name="btnOpen"><property name="text"><string>打开图纸</string></property><property name="toolTip"><string>打开 DWG / DXF (Ctrl+O)</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnSave"><property name="text"><string>保存</string></property><property name="toolTip"><string>保存为 R2004 (Ctrl+S)</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnSaveAs"><property name="text"><string>另存为</string></property><property name="toolTip"><string>始终输出 AC1018 / R2004</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnImportReport"><property name="text"><string>导入报告</string></property><property name="toolTip"><string>查看降版本与跳过对象明细</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnAbout"><property name="text"><string>关于</string></property><property name="toolTip"><string>版本与许可说明</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><spacer name="spacerFile"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tabView">
+       <attribute name="title"><string>视图</string></attribute>
+       <layout class="QHBoxLayout" name="layoutView">
+        <item><widget class="QToolButton" name="btnFit"><property name="text"><string>适应全图</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnZoomIn"><property name="text"><string>放大</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnZoomOut"><property name="text"><string>缩小</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnZoomWindow"><property name="text"><string>窗口缩放</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnPan"><property name="text"><string>平移</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDark"><property name="text"><string>黑底 / 白底</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><spacer name="spacerView"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tabDraw">
+       <attribute name="title"><string>绘制</string></attribute>
+       <layout class="QHBoxLayout" name="layoutDraw">
+        <item><widget class="QToolButton" name="btnDrawLine"><property name="text"><string>直线</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDrawPolyline"><property name="text"><string>多段线</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDrawRect"><property name="text"><string>矩形</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDrawCircle"><property name="text"><string>圆</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDrawArc"><property name="text"><string>圆弧</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDrawText"><property name="text"><string>文字</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><spacer name="spacerDraw"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tabEdit">
+       <attribute name="title"><string>编辑</string></attribute>
+       <layout class="QHBoxLayout" name="layoutEdit">
+        <item><widget class="QToolButton" name="btnSelect"><property name="text"><string>选择</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnUndo"><property name="text"><string>撤销</string></property><property name="toolTip"><string>Ctrl+Z</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnRedo"><property name="text"><string>重做</string></property><property name="toolTip"><string>Ctrl+Y</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMove"><property name="text"><string>移动</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnCopy"><property name="text"><string>复制</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnRotate"><property name="text"><string>旋转</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDelete"><property name="text"><string>删除</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><spacer name="spacerEdit"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tabMeasure">
+       <attribute name="title"><string>测量</string></attribute>
+       <layout class="QHBoxLayout" name="layoutMeasure">
+        <item><widget class="QToolButton" name="btnMeasureDistance"><property name="text"><string>测距离</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMeasureChain"><property name="text"><string>累计长度</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMeasureArea"><property name="text"><string>测面积</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMeasureRadius"><property name="text"><string>半径 / 直径</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMeasureClear"><property name="text"><string>清除结果</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><spacer name="spacerMeasure"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+      <widget class="QWidget" name="tabOutput">
+       <attribute name="title"><string>输出</string></attribute>
+       <layout class="QHBoxLayout" name="layoutOutput">
+        <item><widget class="QToolButton" name="btnExportPdf"><property name="text"><string>导出 PDF</string></property><property name="toolTip"><string>独立矢量渲染路径，不经过 DWG 写入</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnExportDxf"><property name="text"><string>导出 DXF</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><spacer name="spacerOutput"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+    <item>
+     <widget class="QSplitter" name="mainSplitter">
+      <property name="orientation"><enum>Qt::Horizontal</enum></property>
+      <property name="childrenCollapsible"><bool>false</bool></property>
+      <widget class="QWidget" name="leftPanel">
+       <layout class="QVBoxLayout" name="leftLayout">
+        <item><widget class="QLabel" name="labelLayers"><property name="text"><string>图层</string></property><property name="styleSheet"><string notr="true">font-weight:bold;padding:3px;</string></property></widget></item>
+        <item><widget class="QLineEdit" name="layerSearch"><property name="placeholderText"><string>搜索图层…</string></property></widget></item>
+        <item><widget class="QTreeWidget" name="layerTree"><column><property name="text"><string>显示</string></property></column><column><property name="text"><string>图层名</string></property></column><column><property name="text"><string>颜色</string></property></column></widget></item>
+        <item><layout class="QHBoxLayout" name="layerButtons"><item><widget class="QPushButton" name="btnLayerAllOn"><property name="text"><string>全部显示</string></property></widget></item><item><widget class="QPushButton" name="btnLayerInvert"><property name="text"><string>反选</string></property></widget></item></layout></item>
+       </layout>
+      </widget>
+      <widget class="CadCanvas" name="canvas">
+       <property name="minimumSize"><size><width>500</width><height>400</height></size></property>
+       <property name="mouseTracking"><bool>true</bool></property>
+       <property name="focusPolicy"><enum>Qt::StrongFocus</enum></property>
+      </widget>
+      <widget class="QWidget" name="rightPanel">
+       <layout class="QVBoxLayout" name="rightLayout">
+        <item><widget class="QLabel" name="labelProp"><property name="text"><string>属性</string></property><property name="styleSheet"><string notr="true">font-weight:bold;padding:3px;</string></property></widget></item>
+        <item><widget class="QTreeWidget" name="propTree"><column><property name="text"><string>属性</string></property></column><column><property name="text"><string>值</string></property></column></widget></item>
+        <item><widget class="QLabel" name="labelMeasure"><property name="text"><string>测量结果</string></property><property name="styleSheet"><string notr="true">font-weight:bold;padding:3px;</string></property></widget></item>
+        <item><widget class="QListWidget" name="measureList"/></item>
+        <item><widget class="QLabel" name="labelReport"><property name="text"><string>导入报告</string></property><property name="styleSheet"><string notr="true">font-weight:bold;padding:3px;</string></property></widget></item>
+        <item><widget class="QTextBrowser" name="reportBrowser"><property name="maximumSize"><size><width>16777215</width><height>150</height></size></property></widget></item>
+       </layout>
+      </widget>
+     </widget>
+    </item>
+    <item>
+     <widget class="QFrame" name="commandBar">
+      <property name="frameShape"><enum>QFrame::StyledPanel</enum></property>
+      <property name="maximumSize"><size><width>16777215</width><height>42</height></size></property>
+      <layout class="QHBoxLayout" name="commandLayout">
+       <item><widget class="QLabel" name="commandTitle"><property name="text"><string>命令：</string></property><property name="styleSheet"><string notr="true">font-weight:bold;</string></property></widget></item>
+       <item><widget class="QLabel" name="commandHint"><property name="text"><string>就绪。打开图纸开始看图；滚轮缩放，中键拖动平移。</string></property></widget></item>
+       <item><spacer name="spacerCommand"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+       <item><widget class="QLineEdit" name="commandInput"><property name="placeholderText"><string>输入命令（DI 测距 / L 直线 / C 圆 / E 删除 / Z 全图）</string></property><property name="maximumSize"><size><width>360</width><height>16777215</height></size></property></widget></item>
+      </layout>
+     </widget>
+    </item>
+   </layout>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry"><rect><x>0</x><y>0</y><width>1440</width><height>26</height></rect></property>
+   <widget class="QMenu" name="menuFile"><property name="title"><string>文件(&amp;F)</string></property><addaction name="actOpen"/><addaction name="actSave"/><addaction name="actSaveAs"/><addaction name="separator"/><addaction name="actExportPdf"/><addaction name="actExportDxf"/><addaction name="separator"/><addaction name="actQuit"/></widget>
+   <widget class="QMenu" name="menuView"><property name="title"><string>视图(&amp;V)</string></property><addaction name="actFit"/><addaction name="actZoomIn"/><addaction name="actZoomOut"/></widget>
+   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/></widget>
+   <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/></widget>
+   <widget class="QMenu" name="menuHelp"><property name="title"><string>帮助(&amp;H)</string></property><addaction name="actAbout"/></widget>
+   <addaction name="menuFile"/><addaction name="menuView"/><addaction name="menuEdit"/><addaction name="menuMeasure"/><addaction name="menuHelp"/>
+  </widget>
+  <widget class="QStatusBar" name="statusbar"/>
+  <action name="actOpen"><property name="text"><string>打开图纸</string></property><property name="shortcut"><string>Ctrl+O</string></property></action>
+  <action name="actSave"><property name="text"><string>保存 (R2004)</string></property><property name="shortcut"><string>Ctrl+S</string></property></action>
+  <action name="actSaveAs"><property name="text"><string>另存为…</string></property><property name="shortcut"><string>Ctrl+Shift+S</string></property></action>
+  <action name="actExportPdf"><property name="text"><string>导出 PDF</string></property><property name="shortcut"><string>Ctrl+P</string></property></action>
+  <action name="actExportDxf"><property name="text"><string>导出 DXF</string></property></action>
+  <action name="actQuit"><property name="text"><string>退出</string></property><property name="shortcut"><string>Ctrl+Q</string></property></action>
+  <action name="actFit"><property name="text"><string>适应全图</string></property><property name="shortcut"><string>Z</string></property></action>
+  <action name="actZoomIn"><property name="text"><string>放大</string></property></action>
+  <action name="actZoomOut"><property name="text"><string>缩小</string></property></action>
+  <action name="actUndo"><property name="text"><string>撤销</string></property><property name="shortcut"><string>Ctrl+Z</string></property></action>
+  <action name="actRedo"><property name="text"><string>重做</string></property><property name="shortcut"><string>Ctrl+Y</string></property></action>
+  <action name="actDelete"><property name="text"><string>删除</string></property><property name="shortcut"><string>Delete</string></property></action>
+  <action name="actMeasureDistance"><property name="text"><string>测距离</string></property><property name="shortcut"><string>DI</string></property></action>
+  <action name="actMeasureArea"><property name="text"><string>测面积</string></property></action>
+  <action name="actAbout"><property name="text"><string>关于 IloveCAD</string></property></action>
+ </widget>
+ <customwidgets>
+  <customwidget>
+   <class>CadCanvas</class>
+   <extends>QWidget</extends>
+   <header>ilovecad.ui.canvas</header>
+  </customwidget>
+ </customwidgets>
+ <resources/>
+ <connections/>
+</ui>

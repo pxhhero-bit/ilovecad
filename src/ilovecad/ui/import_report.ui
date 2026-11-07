@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ImportReportDialog</class>
+ <widget class="QDialog" name="ImportReportDialog">
+  <property name="windowTitle"><string>导入报告</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>620</width><height>460</height></rect></property>
+  <layout class="QVBoxLayout" name="vbox">
+   <item><widget class="QLabel" name="labelTitle"><property name="text"><string>本次导入的版本处理与数据完整性明细</string></property><property name="styleSheet"><string notr="true">font-weight:bold;</string></property></widget></item>
+   <item><widget class="QTextBrowser" name="reportText"><property name="font"><font><family>Consolas</family><pointsize>9</pointsize></font></property></widget></item>
+   <item><widget class="QDialogButtonBox" name="buttonBox"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="standardButtons"><enum>QDialogButtonBox::Close</enum></property></widget></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

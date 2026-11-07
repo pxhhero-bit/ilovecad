@@ -1,0 +1,26 @@
+IloveCAD - a lightweight 2D DWG viewer and editor
+Copyright (C) 2026 Hero Pang and contributors
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License along with
+this program. If not, see <https://www.gnu.org/licenses/>.
+
+IloveCAD contains no advertising, no membership or VIP tiers, no subscription,
+no account system, no cloud requirement, no telemetry and no paid feature gate.
+Every feature present in the source is available to every user.
+
+This product uses GNU LibreDWG (GPL-3.0-or-later) as its DWG read/write
+kernel. See THIRD_PARTY.md for the pinned version, its license and how to
+obtain the corresponding source code.
+
+3D drawing support is deliberately and permanently out of scope. See README.md.

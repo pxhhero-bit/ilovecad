@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+*.log
+
+# LibreDWG binaries are downloaded, never committed (GPL corresponding source
+# is fetched by scripts/fetch_libredwg.py and documented in THIRD_PARTY.md).
+third_party/libredwg/bin/
+third_party/libredwg/*.zip
+third_party/libredwg/*.tar.xz
+
+# Compiled UI output. Edit the .ui files instead.
+src/ilovecad/ui/generated/
+
+# Local user state and test scratch
+*.dwg.bak
+*.tmp
+screenshots/
+tests/_work/
+*.dwg
+*.dxf
+*.pdf
