@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPoint, QPointF, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QInputDialog, QWidget
 from ..fonts import ui_font
+from ..preferences import load_snap_config
 
 from ..model import geometry as g
 from ..model.document import DwgDocument
@@ -51,6 +52,8 @@ class CadCanvas(QWidget):
     measurementAdded = Signal(dict)
     selectionChanged = Signal(int)
     documentEdited = Signal()
+    snapStateChanged = Signal(bool)
+    snapHint = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,7 +70,8 @@ class CadCanvas(QWidget):
         self.cursor_screen: QPointF | None = None
         self.snap_result: snapping.SnapResult | None = None
         self.dark = False
-        self.snap_enabled = True
+        self.snap_config = load_snap_config()
+        self._last_snap_kind: str | None = None
         self.ortho = False
         self.grid = True
         self.show_lineweight = True
@@ -75,6 +79,7 @@ class CadCanvas(QWidget):
         self._revision = 0
         self._dl = None
         self._dl_key = None
+        self._highlight_index: int | None = None
         self._drag_origin: QPoint | None = None
         self._drag_last: QPoint | None = None
         self._rubber: tuple[QPointF, QPointF] | None = None
@@ -88,6 +93,10 @@ class CadCanvas(QWidget):
         self.undo_stack.set_document(doc)
         self.points.clear()
         self._angle_entities.clear()
+        self.snap_result = None
+        self._last_snap_kind = None
+        self._highlight_index = None
+        self.snapHint.emit("")
         self.mode = "select"
         self.current_layer = "0" if "0" in doc.layers else next(iter(doc.layers), "0")
         self.view.fit(doc.bounds())
@@ -149,9 +158,31 @@ class CadCanvas(QWidget):
     def toggle_dark(self) -> bool:
         return self.set_dark(not self.dark)
 
+    # ------------------------------------------------------------- snapping
+    @property
+    def snap_enabled(self) -> bool:
+        return self.snap_config.enabled
+
+    @snap_enabled.setter
+    def snap_enabled(self, value: bool) -> None:
+        self.snap_config.enabled = bool(value)
+
+    def set_snap_config(self, config: snapping.SnapConfig) -> None:
+        """Apply a typed snap configuration coming from the settings dialog."""
+        self.snap_config = config.copy()
+        self.snap_result = None
+        self._last_snap_kind = None
+        self.snapHint.emit("")
+        self.snapStateChanged.emit(self.snap_config.enabled)
+        self.invalidate()
+
+    def set_snap_enabled(self, value: bool) -> bool:
+        self.snap_config.enabled = bool(value)
+        self.snapStateChanged.emit(self.snap_config.enabled)
+        return self.snap_config.enabled
+
     def toggle_snap(self) -> bool:
-        self.snap_enabled = not self.snap_enabled
-        return self.snap_enabled
+        return self.set_snap_enabled(not self.snap_config.enabled)
 
     def toggle_ortho(self) -> bool:
         self.ortho = not self.ortho
@@ -167,8 +198,25 @@ class CadCanvas(QWidget):
         self.invalidate()
         return self.show_lineweight
 
+    def set_highlight_measurement(self, index: int | None) -> None:
+        """Highlight one measurement annotation (screen only, never in PDF)."""
+        self._highlight_index = index
+        self.invalidate()
+
+    def zoom_to_measurement(self, bounds) -> None:
+        """Fit a measurement's annotation bounds with some drawing context."""
+        if not bounds:
+            return
+        x0, y0, x1, y1 = bounds
+        doc_b = self.doc.bounds()
+        span = max(doc_b[2] - doc_b[0], doc_b[3] - doc_b[1]) if doc_b else 100.0
+        pad = max((x1 - x0), (y1 - y0), span * 0.06)
+        self.view.fit((x0 - pad, y0 - pad, x1 + pad, y1 + pad), margin=0.05)
+        self.update()
+
     def clear_measurements(self) -> None:
         self.doc.measurements.clear()
+        self._highlight_index = None
         self.refresh()
 
     def visible_bounds(self):
@@ -177,11 +225,12 @@ class CadCanvas(QWidget):
     # -------------------------------------------------------------- rendering
     def _display_list(self):
         key = (self._revision, self.dark, self.show_lineweight,
-               self.include_measurements)
+               self.include_measurements, self._highlight_index)
         if self._dl is None or key != self._dl_key:
             self._dl = build(self.doc, dark=self.dark,
                              include_measurements=self.include_measurements,
-                             use_lineweight=self.show_lineweight)
+                             use_lineweight=self.show_lineweight,
+                             highlight_index=self._highlight_index)
             self._dl_key = key
         return self._dl
 
@@ -251,15 +300,55 @@ class CadCanvas(QWidget):
             p.drawEllipse(q, 3.0, 3.0)
 
     def _draw_snap(self, p: QPainter):
-        if not self.snap_result:
+        """Distinct marker per snap kind, plus a readable label badge."""
+        r = self.snap_result
+        if not r:
             return
-        q = QPointF(*self.view.to_screen(self.snap_result.point))
-        pen = QPen(QColor(40, 190, 90))
-        pen.setWidthF(1.6)
+        q = QPointF(*self.view.to_screen(r.point))
+        x, y, s = q.x(), q.y(), 7.0
+        marker = QColor(70, 225, 125) if self.dark else QColor(18, 145, 70)
+        pen = QPen(marker)
+        pen.setWidthF(1.8)
         p.setPen(pen)
-        p.drawRect(q.x() - 6, q.y() - 6, 12, 12)
-        p.setFont(ui_font(9))
-        p.drawText(q + QPointF(9, -8), self.snap_result.label)
+        shape = snapping.MARKER_SHAPES.get(r.kind, "square")
+        if shape == "square":
+            p.drawRect(QRectF(x - s, y - s, 2 * s, 2 * s))
+        elif shape == "triangle":
+            p.drawPolygon(QPolygonF([QPointF(x, y - s),
+                                     QPointF(x - s, y + s * 0.8),
+                                     QPointF(x + s, y + s * 0.8)]))
+        elif shape == "circle":
+            p.drawEllipse(q, s, s)
+            p.drawLine(QPointF(x - s - 3, y), QPointF(x + s + 3, y))
+            p.drawLine(QPointF(x, y - s - 3), QPointF(x, y + s + 3))
+        elif shape == "diamond":
+            p.drawPolygon(QPolygonF([QPointF(x, y - s - 1), QPointF(x + s + 1, y),
+                                     QPointF(x, y + s + 1), QPointF(x - s - 1, y)]))
+        elif shape == "cross":
+            p.drawLine(QPointF(x - s, y - s), QPointF(x + s, y + s))
+            p.drawLine(QPointF(x - s, y + s), QPointF(x + s, y - s))
+        elif shape == "angle":
+            p.drawLine(QPointF(x - s, y - s), QPointF(x - s, y + s))
+            p.drawLine(QPointF(x - s, y + s), QPointF(x + s, y + s))
+            p.drawLine(QPointF(x - s, y - s), QPointF(x + s, y - s))
+        elif shape == "hourglass":
+            p.drawLine(QPointF(x - s, y - s), QPointF(x + s, y + s))
+            p.drawLine(QPointF(x + s, y - s), QPointF(x - s, y + s))
+            p.drawLine(QPointF(x - s, y - s), QPointF(x + s, y - s))
+        elif shape == "plus":
+            p.drawLine(QPointF(x - s, y), QPointF(x + s, y))
+            p.drawLine(QPointF(x, y - s), QPointF(x, y + s))
+        else:  # dot
+            p.drawEllipse(q, 3.0, 3.0)
+
+        font = ui_font(9)
+        p.setFont(font)
+        fm = QFontMetrics(font)
+        w = fm.horizontalAdvance(r.label) + 10
+        badge = QColor(18, 24, 22, 205) if self.dark else QColor(240, 255, 244, 225)
+        p.fillRect(QRectF(x + 10, y - 22, w, 17), badge)
+        p.setPen(QColor(225, 255, 235) if self.dark else QColor(10, 90, 45))
+        p.drawText(QPointF(x + 15, y - 9), r.label)
 
     def _draw_rubber(self, p: QPainter):
         if not self._rubber:
@@ -277,8 +366,14 @@ class CadCanvas(QWidget):
 
     def _snapped(self, pos) -> Point:
         raw = self._model_at(pos)
-        tol = 12.0 / max(self.view.scale, 1e-9)
-        self.snap_result = snapping.find_snap(self.doc, raw, tol, self.snap_enabled)
+        tol = self.snap_config.radius_px / max(self.view.scale, 1e-9)
+        reference = self.points[-1] if self.points else None
+        self.snap_result = snapping.find_snap(
+            self.doc, raw, tol, self.snap_enabled, self.snap_config, reference)
+        kind = self.snap_result.kind if self.snap_result else None
+        if kind != self._last_snap_kind:
+            self._last_snap_kind = kind
+            self.snapHint.emit(self.snap_result.label if self.snap_result else "")
         q = self.snap_result.point if self.snap_result else raw
         if self.ortho and self.points:
             q = snapping.ortho_point(self.points[-1], q)

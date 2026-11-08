@@ -8,7 +8,7 @@
   <layout class="QVBoxLayout" name="vbox">
    <item><widget class="QLabel" name="labelName"><property name="text"><string>IloveCAD</string></property><property name="styleSheet"><string notr="true">font-size:22px;font-weight:bold;</string></property></widget></item>
    <item><widget class="QLabel" name="labelDesc"><property name="text"><string>面向 2D 图纸的轻量 CAD 看图与编辑工具</string></property></widget></item>
-   <item><widget class="QTextBrowser" name="aboutText"><property name="html"><string>&lt;p&gt;&lt;b&gt;纯净版承诺&lt;/b&gt;：无广告、无会员 / VIP、无订阅、无账号体系、无云盘依赖、无遥测、无功能付费墙。&lt;/p&gt;&lt;p&gt;&lt;b&gt;范围&lt;/b&gt;：仅支持 2D 图纸。3D 实体、三维视图、约束、动态块等被明确跳过，不属于待办事项。&lt;/p&gt;&lt;p&gt;&lt;b&gt;内核&lt;/b&gt;：GNU LibreDWG（GPL-3.0-or-later）；写入锁定 R2004 / AC1018；高版本读入走源头降版本兜底；PDF 走独立矢量渲染路径。&lt;/p&gt;&lt;p&gt;&lt;b&gt;许可&lt;/b&gt;：GPL-3.0-or-later，全文见 COPYING。&lt;/p&gt;</string></property></widget></item>
+   <item><widget class="QTextBrowser" name="aboutText"><property name="html"><string>&lt;p&gt;&lt;b&gt;纯净版承诺&lt;/b&gt;：无广告、无会员 / VIP、无订阅、无账号体系、无云盘依赖、无遥测、无功能付费墙。&lt;/p&gt;&lt;p&gt;&lt;b&gt;范围&lt;/b&gt;：仅支持 2D 图纸。3D 实体、三维视图、约束、动态块等被明确跳过，不属于待办事项。&lt;/p&gt;&lt;p&gt;&lt;b&gt;内核&lt;/b&gt;：GNU LibreDWG（GPL-3.0-or-later）；写入锁定 R2004 / AC1018；高版本读入走源头降版本兜底；PDF 走独立矢量渲染路径。&lt;/p&gt;&lt;p&gt;&lt;b&gt;捕捉与批量输出&lt;/b&gt;：端点 / 顶点、中点、中心 / 圆心、象限点、交点、垂足、最近点可单独开关（F3 全局开关，设置仅存本机）；支持批量转换 R2004 DWG / AC1018 DXF，原文件永不改写。&lt;/p&gt;&lt;p&gt;&lt;b&gt;许可&lt;/b&gt;：GPL-3.0-or-later，全文见 COPYING。&lt;/p&gt;</string></property></widget></item>
    <item><widget class="QDialogButtonBox" name="buttonBox"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="standardButtons"><enum>QDialogButtonBox::Close</enum></property></widget></item>
   </layout>
  </widget>

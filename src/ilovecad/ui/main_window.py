@@ -2,26 +2,43 @@
 """Main window controller. All layout lives in the .ui files."""
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog,
-                               QInputDialog, QLabel, QSizePolicy,
-                               QListWidgetItem, QMainWindow, QMessageBox,
-                               QTreeWidgetItem)
+from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog,
+                               QInputDialog, QLabel, QListWidgetItem, QMainWindow,
+                               QMenu, QMessageBox, QSizePolicy, QTreeWidgetItem)
 
 from .. import APP_NAME, APP_VERSION
 from ..kernel.core import ImportReport, KernelError, LibreDwgKernel
+from ..model import geometry as g
 from ..model.document import DwgDocument
+from ..preferences import save_snap_config
 from ..render.displaylist import build
 from ..render.pdf import PdfOptions, PdfRenderer
 from ..theme import apply_theme, is_dark, label as theme_label, load_theme, save_theme
 from ..tools.measure import format_line
+from ..tools.snapping import SnapConfig
 from ..version import TARGET_VERSION_LABEL
+from .batch_convert import BatchConvertDialog
 from .loader import load_ui
 
 DWG_FILTER = "DWG / DXF 图纸 (*.dwg *.dxf);;所有文件 (*)"
+
+# Checkbox widget name per stable snap kind. Keep in sync with settings.ui.
+SNAP_CHECKBOXES = {
+    "endpoint": "checkSnapEndpoint",
+    "midpoint": "checkSnapMidpoint",
+    "center": "checkSnapCenter",
+    "quadrant": "checkSnapQuadrant",
+    "intersection": "checkSnapIntersection",
+    "perpendicular": "checkSnapPerpendicular",
+    "nearest": "checkSnapNearest",
+    "insertion": "checkSnapInsertion",
+    "node": "checkSnapNode",
+}
 
 
 def _localize_button_box(box: QDialogButtonBox) -> None:
@@ -69,20 +86,53 @@ class ImportReportDialog(QDialog):
         self.ui.buttonBox.rejected.connect(self.reject)
 
 
-class ThemeSettingsDialog(QDialog):
-    """Dark (default) / light application theme selector."""
+class SettingsDialog(QDialog):
+    """Local-only settings: appearance theme + typed object snapping."""
 
-    def __init__(self, current_theme: str, parent=None):
+    def __init__(self, current_theme: str, snap_config: SnapConfig | None = None,
+                 parent=None):
         super().__init__(parent)
         self.ui = load_ui(self, "settings")
         _localize_button_box(self.ui.buttonBox)
         self.ui.radioDark.setChecked(is_dark(current_theme))
         self.ui.radioLight.setChecked(not is_dark(current_theme))
+        self._load_snap(snap_config or SnapConfig())
+        self.ui.btnSnapDefaults.clicked.connect(
+            lambda: self._load_snap(SnapConfig()))
+        self.ui.checkSnapEnabled.toggled.connect(self._sync_snap_controls)
+        self._sync_snap_controls()
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
 
+    def _load_snap(self, cfg: SnapConfig) -> None:
+        self.ui.checkSnapEnabled.setChecked(cfg.enabled)
+        self.ui.spinSnapRadius.setValue(int(cfg.radius_px))
+        for kind, name in SNAP_CHECKBOXES.items():
+            widget = getattr(self.ui, name, None)
+            if widget is not None:
+                widget.setChecked(cfg.modes.get(kind, False))
+
+    def _sync_snap_controls(self, _checked=None) -> None:
+        on = self.ui.checkSnapEnabled.isChecked()
+        self.ui.groupSnapKinds.setEnabled(on)
+        self.ui.spinSnapRadius.setEnabled(on)
+
+    def show_snap_page(self) -> None:
+        self.ui.tabSettings.setCurrentWidget(self.ui.tabSnapping)
+
     def theme(self) -> str:
         return "light" if self.ui.radioLight.isChecked() else "dark"
+
+    def snap_config(self) -> SnapConfig:
+        return SnapConfig(
+            enabled=self.ui.checkSnapEnabled.isChecked(),
+            radius_px=float(self.ui.spinSnapRadius.value()),
+            modes={kind: getattr(self.ui, name).isChecked()
+                   for kind, name in SNAP_CHECKBOXES.items()})
+
+
+# Older callers (and the command alias) still use the original name.
+ThemeSettingsDialog = SettingsDialog
 
 
 class AboutDialog(QDialog):
@@ -105,6 +155,8 @@ class MainWindow(QMainWindow):
         self.current_path: Path | None = None
         self.report = ImportReport()
         self._loading_layers = False
+        self._persist_snapping = True   # selftests can disable local writes
+        self._snap_kind = ""
 
         self.canvas = self.ui.canvas
         self.canvas.set_document(self.doc)
@@ -127,7 +179,7 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self):
         self.lblCoord = QLabel("X 0.000   Y 0.000")
         self.lblScale = QLabel("比例 —")
-        self.lblSnap = QLabel("捕捉 开")
+        self.lblSnap = QLabel("捕捉 开" if self.canvas.snap_enabled else "捕捉 关")
         self.lblOrtho = QLabel("正交 关")
         self.lblGrid = QLabel("栅格 开")
         self.lblLW = QLabel("线宽 开")
@@ -159,6 +211,8 @@ class MainWindow(QMainWindow):
         c.measurementAdded.connect(self._on_measurement)
         c.selectionChanged.connect(self._on_selection)
         c.documentEdited.connect(self._on_document_edited)
+        c.snapStateChanged.connect(self._on_snap_state)
+        c.snapHint.connect(self._on_snap_hint)
 
         tool_map = {
             "btnOpen": self.open_file_dialog, "btnSave": self.save,
@@ -190,6 +244,7 @@ class MainWindow(QMainWindow):
             "btnMeasureAngleLines": lambda: c.set_mode("angle_lines"),
             "btnMeasureClear": self._clear_measurements,
             "btnExportPdf": self.export_pdf, "btnExportDxf": self.export_dxf,
+            "btnBatchConvert": self.open_batch_convert,
             "btnLayerAllOn": self._layers_all_on,
             "btnLayerInvert": self._layers_invert,
         }
@@ -201,7 +256,8 @@ class MainWindow(QMainWindow):
         action_map = {
             "actOpen": self.open_file_dialog, "actSave": self.save,
             "actSaveAs": self.save_as, "actExportPdf": self.export_pdf,
-            "actExportDxf": self.export_dxf, "actQuit": self.close,
+            "actExportDxf": self.export_dxf,
+            "actBatchConvert": self.open_batch_convert, "actQuit": self.close,
             "actFit": c.fit_view, "actZoomIn": c.zoom_in,
             "actZoomOut": c.zoom_out, "actUndo": c.undo, "actRedo": c.redo,
             "actDelete": lambda: c.set_mode("delete"),
@@ -210,6 +266,8 @@ class MainWindow(QMainWindow):
             "actMeasureAngle": lambda: c.set_mode("angle"),
             "actMeasureAngleLines": lambda: c.set_mode("angle_lines"),
             "actThemeSettings": self._open_theme_settings,
+            "actSnapSettings": self._open_snap_settings,
+            "actCommandHelp": self._show_command_help,
             "actAbout": self.show_about,
         }
         for name, slot in action_map.items():
@@ -221,6 +279,10 @@ class MainWindow(QMainWindow):
         u.layerSearch.textChanged.connect(self._filter_layers)
         u.propTree.itemDoubleClicked.connect(self._on_property_double_clicked)
         u.commandInput.returnPressed.connect(self._on_command)
+        u.measureList.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        u.measureList.customContextMenuRequested.connect(self._measure_context_menu)
+        u.measureList.itemClicked.connect(self._highlight_measurement)
+        u.measureList.itemDoubleClicked.connect(self._locate_measurement)
 
     # ------------------------------------------------------------------ files
     def _update_title(self):
@@ -351,6 +413,11 @@ class MainWindow(QMainWindow):
         self.kernel.export_dxf(self.doc, target)
         self._status(f"已导出 AC1018 DXF：{target.name}")
 
+    def open_batch_convert(self):
+        dlg = BatchConvertDialog(self.kernel, self)
+        dlg.exec()
+        self._status("批量转换窗口已关闭；输出目录中的原图纸未被改写")
+
     # ----------------------------------------------------------------- layers
     def _populate_layers(self):
         self._loading_layers = True
@@ -462,6 +529,118 @@ class MainWindow(QMainWindow):
         self.canvas.clear_measurements()
         self.ui.measureList.clear()
 
+    @staticmethod
+    def _measure_of(item):
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _measurement_index(self, m: dict | None) -> int:
+        if m is None:
+            return -1
+        for i, record in enumerate(self.doc.measurements):
+            if record is m:
+                return i
+        for i, record in enumerate(self.doc.measurements):
+            if record == m:
+                return i
+        return -1
+
+    def _measurement_bounds(self, m: dict):
+        pts: list[tuple[float, float]] = []
+        for seq in (m.get("paths") or [m.get("points", [])]):
+            pts.extend(tuple(p[:2]) for p in seq)
+        if m.get("label_at"):
+            pts.append(tuple(m["label_at"][:2]))
+        return g.bounds_of(pts)
+
+    def _highlight_measurement(self, item):
+        idx = self._measurement_index(self._measure_of(item))
+        self.canvas.set_highlight_measurement(idx if idx >= 0 else None)
+        if idx >= 0:
+            self._status(f"已高亮第 {idx + 1} 条测量标注；双击可定位到该标注")
+
+    def _locate_measurement(self, item):
+        m = self._measure_of(item)
+        idx = self._measurement_index(m)
+        if not m or idx < 0:
+            self._status("该测量记录已不存在")
+            return
+        b = self._measurement_bounds(m)
+        self.canvas.set_highlight_measurement(idx)
+        self.canvas.zoom_to_measurement(b)
+        self._status(f"已定位第 {idx + 1} 条测量标注：{m.get('label', '')}")
+
+    def _delete_measurement(self, item):
+        m = self._measure_of(item)
+        idx = self._measurement_index(m)
+        if idx < 0:
+            return
+        self.doc.measurements.pop(idx)
+        self.ui.measureList.takeItem(self.ui.measureList.row(item))
+        self.canvas.set_highlight_measurement(None)
+        self.canvas.refresh()
+        self._status(f"已删除第 {idx + 1} 条测量记录")
+
+    def _copy_measurement(self, item):
+        m = self._measure_of(item)
+        if m:
+            QApplication.clipboard().setText(str(m.get("label", "")))
+            self._status(f"已复制：{m.get('label', '')}")
+
+    def _export_measurements_csv(self):
+        if not self.doc.measurements:
+            self._status("没有可导出的测量记录")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出测量记录", "measurements.csv", "CSV 文件 (*.csv)")
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() != ".csv":
+            target = target.with_suffix(".csv")
+        try:
+            with target.open("w", newline="", encoding="utf-8-sig") as fp:
+                writer = csv.writer(fp)
+                writer.writerow(["序号", "类型", "结果", "数值", "补充说明", "标注点数"])
+                for i, m in enumerate(self.doc.measurements, 1):
+                    writer.writerow([
+                        i, m.get("kind", ""), m.get("label", ""),
+                        m.get("value", ""),
+                        " ".join(str(m.get("extra", "")).split()),
+                        len(m.get("points", []))])
+        except OSError as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+        self._status(f"已导出 {len(self.doc.measurements)} 条测量记录：{target.name}")
+
+    def _measure_context_menu(self, pos):
+        item = self.ui.measureList.itemAt(pos)
+        menu = QMenu(self)
+        if item:
+            menu.addAction("定位到标注", lambda: self._locate_measurement(item))
+            menu.addAction("复制结果数值", lambda: self._copy_measurement(item))
+            menu.addAction("删除此条记录", lambda: self._delete_measurement(item))
+            menu.addSeparator()
+        menu.addAction("导出全部测量记录 (CSV)…", self._export_measurements_csv)
+        menu.addAction("清除所有结果", self._clear_measurements)
+        menu.exec(self.ui.measureList.viewport().mapToGlobal(pos))
+
+    def _show_command_help(self):
+        self.ui.reportBrowser.setPlainText(
+            "IloveCAD 命令与快捷键（在底部命令栏输入即可）\n"
+            "========================================\n"
+            "文件：OPEN / SAVE / DXF / PDF　（Ctrl+O / Ctrl+S / Ctrl+P / Ctrl+Shift+S）\n"
+            "视图：Z 或 FIT 适应全图、P 平移、F7 栅格、F8 正交、GRID / ORTHO\n"
+            "捕捉：F3 或 SNAP 开关；OSNAP / SNAPSET 打开捕捉设置；\n"
+            "       端点 / 顶点、中点、中心 / 圆心、象限点、交点、垂足、最近点可单独开关\n"
+            "绘制：L / LINE、PL、REC、C / CIRCLE、A、T / TEXT\n"
+            "编辑：E / DELETE、M / MOVE、CO / COPY、RO / ROTATE、UNDO / Ctrl+Z、REDO / Ctrl+Y\n"
+            "测量：DI / DIST、CHAIN、AREA、R、ANG / DAN（三点夹角）、AL / ANGLELINE（两线夹角）\n"
+            "设置：THEME / SETTINGS / OP 打开主题与对象捕捉设置\n"
+            "帮助：HELP / ? 显示本说明\n"
+            "\n测量结果列表：单击高亮，双击定位，右键可删除单条 / 复制数值 / 导出 CSV。\n"
+            "鼠标：滚轮缩放，中键或「平移」模式左键拖动平移，Esc 取消当前命令。\n")
+        self._status("已显示命令与快捷键说明（右下「导入报告」区域）")
+
     # ---------------------------------------------------------------- commands
     def _on_command(self):
         text = self.ui.commandInput.text().strip()
@@ -487,11 +666,20 @@ class MainWindow(QMainWindow):
         if cmd == "PDF":
             self.export_pdf()
             return
-        if cmd == "THEME":
-            self._open_theme_settings()
+        if cmd in ("THEME", "SETTINGS", "OP", "OPTIONS", "PREFERENCES"):
+            self._open_settings()
+            return
+        if cmd in ("OSNAP", "SNAPSET", "SNAPSETTINGS"):
+            self._open_settings(snap_page=True)
+            return
+        if cmd in ("HELP", "?", "？"):
+            self._show_command_help()
             return
         if cmd == "DXF":
             self.export_dxf()
+            return
+        if cmd in ("BATCH", "CONVERT"):
+            self.open_batch_convert()
             return
         if cmd == "SAVE":
             self.save()
@@ -503,7 +691,7 @@ class MainWindow(QMainWindow):
             self.canvas.redo()
             return
         if cmd == "SNAP":
-            self.lblSnap.setText(f"捕捉 {'开' if self.canvas.toggle_snap() else '关'}")
+            self.canvas.toggle_snap()   # state signal updates label + local prefs
             return
         if cmd == "ORTHO":
             self.lblOrtho.setText(f"正交 {'开' if self.canvas.toggle_ortho() else '关'}")
@@ -538,10 +726,43 @@ class MainWindow(QMainWindow):
                      + ("（已保存到本机，下次启动生效）" if persist else ""))
         return self.theme
 
+    # --------------------------------------------------------------- snapping
+    def _refresh_snap_label(self) -> None:
+        on = self.canvas.snap_enabled
+        self.lblSnap.setText("捕捉 关" if not on else
+                            f"捕捉 {self._snap_kind}" if self._snap_kind else "捕捉 开")
+
+    def _on_snap_state(self, on: bool) -> None:
+        self._snap_kind = ""
+        self._refresh_snap_label()
+        if self._persist_snapping:
+            save_snap_config(self.canvas.snap_config)
+        self._status(f"对象捕捉：{'开' if on else '关'}（设置已保存在本机）")
+
+    def _on_snap_hint(self, kind: str) -> None:
+        self._snap_kind = kind
+        self._refresh_snap_label()
+
+    # --------------------------------------------------------------- settings
+    def _open_settings(self, snap_page: bool = False):
+        dlg = SettingsDialog(self.theme, self.canvas.snap_config, self)
+        if snap_page:
+            dlg.show_snap_page()
+        if dlg.exec() != QDialog.Accepted:
+            return
+        new_theme = dlg.theme()
+        if new_theme != self.theme:
+            self.set_theme(new_theme)
+        self.canvas.set_snap_config(dlg.snap_config())
+        self._status(f"设置已保存：{theme_label(self.theme)}｜"
+                     f"对象捕捉{'开' if self.canvas.snap_enabled else '关'}"
+                     f"｜半径 {self.canvas.snap_config.radius_px:g} px")
+
     def _open_theme_settings(self):
-        dlg = ThemeSettingsDialog(self.theme, self)
-        if dlg.exec() == QDialog.Accepted:
-            self.set_theme(dlg.theme())
+        self._open_settings()
+
+    def _open_snap_settings(self):
+        self._open_settings(snap_page=True)
 
     def _toggle_dark(self):
         dark = self.canvas.toggle_dark()

@@ -22,6 +22,7 @@ UI_CLASSES = {
     "import_report": "Ui_ImportReportDialog",
     "about": "Ui_AboutDialog",
     "settings": "Ui_SettingsDialog",
+    "batch_convert": "Ui_BatchConvertDialog",
 }
 
 

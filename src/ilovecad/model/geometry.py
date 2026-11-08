@@ -59,6 +59,41 @@ def polygon_area(points: Sequence[Point]) -> float:
     return abs(s) / 2.0
 
 
+def polygon_centroid(points: Sequence[Point]) -> Point | None:
+    """Area centroid of a polygon; falls back to the bounds centre if degenerate."""
+    pts = [(float(x), float(y)) for x, y in points]
+    if len(pts) < 3:
+        return None
+    twice_area = 0.0
+    cx = cy = 0.0
+    for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]):
+        cross = x1 * y2 - x2 * y1
+        twice_area += cross
+        cx += (x1 + x2) * cross
+        cy += (y1 + y2) * cross
+    if abs(twice_area) < EPS:
+        b = bounds_of(pts)
+        return ((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0) if b else None
+    return (cx / (3.0 * twice_area), cy / (3.0 * twice_area))
+
+
+def arc_sweep(start_deg: float, end_deg: float) -> float:
+    """Normalised counter-clockwise sweep of an ARC (0..360 degrees)."""
+    while end_deg < start_deg:
+        end_deg += 360.0
+    return min(end_deg - start_deg, 360.0)
+
+
+def point_on_circle(c: Point, r: float, deg: float) -> Point:
+    return (c[0] + r * math.cos(math.radians(deg)),
+            c[1] + r * math.sin(math.radians(deg)))
+
+
+def angle_in_arc(deg: float, start_deg: float, sweep: float) -> bool:
+    """Whether a circle angle lies inside the ARC sweep (degrees)."""
+    return 0.0 <= (deg - start_deg) % 360.0 <= sweep + EPS
+
+
 def closest_on_segment(p: Point, a: Point, b: Point) -> Point:
     dx, dy = b[0] - a[0], b[1] - a[1]
     den = dx * dx + dy * dy

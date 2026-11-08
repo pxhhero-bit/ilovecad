@@ -49,7 +49,8 @@ def _line_width(ent, doc, use_lineweight: bool) -> float:
 
 def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
           include_measurements: bool = True, use_lineweight: bool = True,
-          only_visible: bool = True) -> DisplayList:
+          only_visible: bool = True,
+          highlight_index: int | None = None) -> DisplayList:
     dl = DisplayList()
     for ent in doc.entities:
         if only_visible and not doc.visible(ent):
@@ -73,19 +74,24 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
                 color=color, rotation=float(d.get("rotation", 0.0))))
 
     if include_measurements:
-        for m in doc.measurements:
+        for index, m in enumerate(doc.measurements):
             # Angle measurements supply several strokes (two arms plus an arc);
             # older measurement kinds keep a single legacy "points" polyline.
             sequences = m.get("paths") or [m.get("points", [])]
             all_points: list[Point] = []
-            acolor = (220, 60, 40) if not monochrome else (0, 0, 0)
-            for idx, seq in enumerate(sequences):
+            active = index == highlight_index
+            if monochrome:
+                acolor = (0, 0, 0)
+            else:
+                acolor = (255, 170, 30) if active else (220, 60, 40)
+            width = _annotation_width(doc) * (2.2 if active else 1.0)
+            for seq in sequences:
                 pts = [tuple(p) for p in seq]
                 if len(pts) < 2:
                     continue
                 all_points.extend(pts)
                 dl.paths.append(PaintPath(
-                    points=pts, color=acolor, width=_annotation_width(doc),
+                    points=pts, color=acolor, width=width,
                     closed=bool(m.get("closed")) if len(sequences) == 1 else False,
                     annotation=True))
             label = str(m.get("label", ""))

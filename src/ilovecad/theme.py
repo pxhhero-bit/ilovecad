@@ -54,6 +54,28 @@ QTreeWidget, QListWidget, QTextBrowser, QPlainTextEdit, QLineEdit {
     background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
     selection-background-color:%(sel)s; selection-color:%(selfg)s;
 }
+QComboBox, QSpinBox {
+    background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
+    border-radius:3px; padding:3px 8px;
+}
+QComboBox::drop-down {
+    subcontrol-origin:padding; subcontrol-position:top right;
+    width:18px; border:0; border-left:1px solid %(border)s;
+}
+QComboBox::down-arrow {
+    image:none; border-left:4px solid transparent;
+    border-right:4px solid transparent; border-top:6px solid %(fg)s;
+    margin-right:6px;
+}
+QComboBox QAbstractItemView {
+    background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
+    selection-background-color:%(sel)s; selection-color:%(selfg)s;
+}
+QProgressBar {
+    background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
+    border-radius:3px; text-align:center; min-height:16px;
+}
+QProgressBar::chunk { background:%(sel)s; }
 QHeaderView::section {
     background:%(btn)s; color:%(fg)s; border:0;
     border-right:1px solid %(border)s; border-bottom:1px solid %(border)s;

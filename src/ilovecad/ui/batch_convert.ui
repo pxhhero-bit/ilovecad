@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<ui version="4.0">
+ <class>BatchConvertDialog</class>
+ <widget class="QDialog" name="BatchConvertDialog">
+  <property name="windowTitle"><string>批量转换</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>720</width><height>540</height></rect></property>
+  <layout class="QVBoxLayout" name="vboxBatch">
+   <item>
+    <widget class="QLabel" name="labelIntro">
+     <property name="text"><string>批量把 DWG / DXF 转换为 R2004 / AC1018。转换结果写入单独目录，文件名自动加后缀，原文件永不改写、永不覆盖已有文件；高版本图纸走源头降版本兜底，跳过对象与警告逐条写入日志。</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layoutFiles">
+     <item><widget class="QListWidget" name="fileList"><property name="selectionMode"><enum>QAbstractItemView::ExtendedSelection</enum></property></widget></item>
+     <item>
+      <layout class="QVBoxLayout" name="layoutFileButtons">
+       <item><widget class="QPushButton" name="btnAddFiles"><property name="text"><string>添加文件…</string></property></widget></item>
+       <item><widget class="QPushButton" name="btnAddFolder"><property name="text"><string>添加目录…</string></property></widget></item>
+       <item><widget class="QPushButton" name="btnRemoveSelected"><property name="text"><string>移除选中</string></property></widget></item>
+       <item><widget class="QPushButton" name="btnClearList"><property name="text"><string>清空列表</string></property></widget></item>
+       <item><spacer name="spacerFileButtons"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property></spacer></item>
+      </layout>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QGridLayout" name="gridOptions">
+     <item row="0" column="0"><widget class="QLabel" name="labelTargetFormat"><property name="text"><string>目标格式：</string></property></widget></item>
+     <item row="0" column="1">
+      <widget class="QComboBox" name="comboFormat">
+       <item><property name="text"><string>R2004 DWG（AC1018）</string></property></item>
+       <item><property name="text"><string>AC1018 DXF</string></property></item>
+      </widget>
+     </item>
+     <item row="1" column="0"><widget class="QLabel" name="labelOutputDir"><property name="text"><string>输出目录：</string></property></widget></item>
+     <item row="1" column="1"><widget class="QLineEdit" name="outputDir"><property name="placeholderText"><string>选择一个单独的输出目录（不会改写源文件）</string></property></widget></item>
+     <item row="1" column="2"><widget class="QPushButton" name="btnBrowseOutput"><property name="text"><string>浏览…</string></property></widget></item>
+    </layout>
+   </item>
+   <item><widget class="QProgressBar" name="progressBar"><property name="value"><number>0</number></property></widget></item>
+   <item><widget class="QPlainTextEdit" name="logText"><property name="readOnly"><bool>true</bool></property><property name="minimumSize"><size><width>0</width><height>150</height></size></property></widget></item>
+   <item>
+    <layout class="QHBoxLayout" name="layoutButtons">
+     <item><spacer name="spacerButtons"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+     <item><widget class="QPushButton" name="btnStart"><property name="text"><string>开始转换</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnClose"><property name="text"><string>关闭</string></property></widget></item>
+    </layout>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

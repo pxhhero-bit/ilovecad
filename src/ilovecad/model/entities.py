@@ -73,27 +73,102 @@ class Entity:
                 out.append((pts[-1], pts[0]))
         return out
 
-    def snap_points(self) -> list[tuple[Point, str]]:
+    # ------------------------------------------------------------- snapping
+    def snap_candidates(self) -> list[tuple[Point, str]]:
+        """Semantic snap points taken from the RAW entity geometry.
+
+        Tessellated display polylines must never be used here: a circle is
+        drawn with 72 chords, but its only boundary points are the four
+        quadrants.  Using the display polyline would create ~144 fake
+        endpoints/midpoints all around the circle and drown out the real
+        centre / midpoint snaps.  Returned keys are the stable ASCII kinds in
+        tools.snapping.SNAP_KINDS.
+        """
         d, k = self.data, self.kind
         out: list[tuple[Point, str]] = []
-        for pts, _ in self.polylines():
-            if not pts:
-                continue
-            out.append((tuple(pts[0]), "端点"))
-            out.append((tuple(pts[-1]), "端点"))
-            for i in range(len(pts) - 1):
-                out.append((g.midpoint(tuple(pts[i]), tuple(pts[i + 1])), "中点"))
-        if k in ("CIRCLE", "ARC"):
-            c, r = tuple(d["c"]), float(d["r"])
-            out.append((c, "圆心"))
-            for a in (0, 90, 180, 270):
-                out.append(((c[0] + r * math.cos(math.radians(a)),
-                             c[1] + r * math.sin(math.radians(a))), "象限点"))
-        if k in ("TEXT", "MTEXT", "DIMENSION"):
-            out.append((tuple(d.get("p", (0, 0))), "插入点"))
-        if k == "POINT":
-            out.append((tuple(d["p"]), "点"))
+
+        def add(p, kind: str) -> None:
+            if p is None:
+                return
+            out.append(((float(p[0]), float(p[1])), kind))
+
+        def chain(pts: list[tuple], closed: bool = False,
+                  bulges: bool = False) -> None:
+            """Boundary vertices + one midpoint per real segment."""
+            clean = [tuple(p[:2]) for p in pts if p is not None and len(p) >= 2]
+            if not clean:
+                return
+            for p in clean:
+                add(p, "endpoint")
+            pairs = list(zip(clean, clean[1:]))
+            if closed and len(clean) > 2:
+                pairs.append((clean[-1], clean[0]))
+            for i, (a, b) in enumerate(pairs):
+                if bulges:
+                    src = pts[i] if i < len(pts) else pts[-1]
+                    bulge = float(src[2]) if len(src) > 2 else 0.0
+                    arc = g.bulge_arc(a, b, bulge)
+                    add(arc[len(arc) // 2], "midpoint")
+                else:
+                    add(g.midpoint(a, b), "midpoint")
+            if closed and len(clean) >= 3:
+                add(g.polygon_centroid(clean), "center")
+
+        try:
+            if k == "LINE":
+                chain([tuple(d["a"]), tuple(d["b"])])
+            elif k in ("LWPOLYLINE", "POLYLINE", "SPLINE"):
+                pts = [tuple(p) for p in d.get("pts", [])]
+                chain(pts, bool(d.get("closed")), bulges=k != "SPLINE")
+            elif k == "CIRCLE":
+                c, r = tuple(d["c"]), float(d["r"])
+                add(c, "center")
+                for a in (0.0, 90.0, 180.0, 270.0):
+                    add(g.point_on_circle(c, r, a), "quadrant")
+            elif k == "ARC":
+                c, r = tuple(d["c"]), float(d["r"])
+                start = float(d["start"])
+                sweep = g.arc_sweep(start, float(d["end"]))
+                add(c, "center")
+                add(g.point_on_circle(c, r, start), "endpoint")
+                add(g.point_on_circle(c, r, start + sweep), "endpoint")
+                add(g.point_on_circle(c, r, start + sweep / 2.0), "midpoint")
+                for a in (0.0, 90.0, 180.0, 270.0):
+                    if g.angle_in_arc(a, start, sweep):
+                        add(g.point_on_circle(c, r, a), "quadrant")
+            elif k == "ELLIPSE":
+                c = tuple(d["c"])
+                add(c, "center")
+                start = float(d.get("start", 0.0))
+                end = float(d.get("end", 2 * math.pi))
+                curve = g.ellipse_points(c, tuple(d["major"]),
+                                         float(d.get("ratio", 1.0)), start, end)
+                if curve:
+                    add(curve[0], "endpoint")
+                    add(curve[-1], "endpoint")
+                    add(curve[len(curve) // 2], "midpoint")
+            elif k == "SOLID":
+                pts = [tuple(p) for p in d.get("pts", []) if len(p) >= 2]
+                if len(pts) >= 3:
+                    order = [pts[0], pts[1], pts[2],
+                             pts[3] if len(pts) > 3 else pts[2]]
+                    chain(order, closed=True)
+            elif k in ("TEXT", "MTEXT", "DIMENSION"):
+                add(tuple(d.get("p", (0.0, 0.0))), "insertion")
+            elif k == "POINT":
+                add(tuple(d["p"]), "node")
+        except (KeyError, TypeError, ValueError, IndexError):
+            # A partially populated entity must never break cursor tracking.
+            return []
         return out
+
+    def snap_points(self) -> list[tuple[Point, str]]:
+        """Backward-compatible view with human-readable Chinese labels."""
+        labels = {"endpoint": "端点", "midpoint": "中点", "center": "中心",
+                  "quadrant": "象限点", "intersection": "交点",
+                  "perpendicular": "垂足", "nearest": "最近点",
+                  "insertion": "插入点", "node": "点"}
+        return [(p, labels.get(kind, kind)) for p, kind in self.snap_candidates()]
 
     def bounds(self):
         b = None

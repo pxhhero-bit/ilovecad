@@ -3,28 +3,81 @@
 <ui version="4.0">
  <class>SettingsDialog</class>
  <widget class="QDialog" name="SettingsDialog">
-  <property name="windowTitle"><string>界面主题设置</string></property>
-  <property name="geometry"><rect><x>0</x><y>0</y><width>460</width><height>300</height></rect></property>
+  <property name="windowTitle"><string>设置</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>520</width><height>470</height></rect></property>
   <layout class="QVBoxLayout" name="vbox">
    <item>
-    <widget class="QGroupBox" name="groupTheme">
-     <property name="title"><string>界面主题</string></property>
-     <layout class="QVBoxLayout" name="vboxTheme">
-      <item><widget class="QRadioButton" name="radioDark"><property name="text"><string>深色主题（默认，黑色画布）</string></property><property name="checked"><bool>true</bool></property></widget></item>
-      <item><widget class="QRadioButton" name="radioLight"><property name="text"><string>浅色主题（原有的白色画布）</string></property></widget></item>
-     </layout>
-    </widget>
-   </item>
-   <item>
-    <widget class="QLabel" name="labelNote">
-     <property name="text"><string>切换主题会同时改变窗体配色与画布底色。「视图 → 黑底 / 白底」按钮可单独反转画布底色，不会改动主题设置。PDF 输出始终使用白底纸张，不受界面主题影响。</string></property>
-     <property name="wordWrap"><bool>true</bool></property>
-    </widget>
-   </item>
-   <item>
-    <widget class="QLabel" name="labelPrivacy">
-     <property name="text"><string>选择仅保存在本机配置文件中。纯净版：无账号、无云同步、无遥测、无广告、无会员与订阅。</string></property>
-     <property name="wordWrap"><bool>true</bool></property>
+    <widget class="QTabWidget" name="tabSettings">
+     <property name="currentIndex"><number>0</number></property>
+     <widget class="QWidget" name="tabAppearance">
+      <attribute name="title"><string>界面主题</string></attribute>
+      <layout class="QVBoxLayout" name="vboxAppearance">
+       <item>
+        <widget class="QGroupBox" name="groupTheme">
+         <property name="title"><string>界面主题</string></property>
+         <layout class="QVBoxLayout" name="vboxTheme">
+          <item><widget class="QRadioButton" name="radioDark"><property name="text"><string>深色主题（默认，黑色画布）</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item><widget class="QRadioButton" name="radioLight"><property name="text"><string>浅色主题（原有的白色画布）</string></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelNote">
+         <property name="text"><string>切换主题会同时改变窗体配色与画布底色。「视图 → 黑底 / 白底」按钮可单独反转画布底色，不会改动主题设置。PDF 输出始终使用白底纸张，不受界面主题影响。</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelPrivacy">
+         <property name="text"><string>选择仅保存在本机配置文件中。纯净版：无账号、无云同步、无遥测、无广告、无会员与订阅。</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item><spacer name="spacerAppearance"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabSnapping">
+      <attribute name="title"><string>对象捕捉</string></attribute>
+      <layout class="QVBoxLayout" name="vboxSnap">
+       <item>
+        <widget class="QCheckBox" name="checkSnapEnabled">
+         <property name="text"><string>启用对象捕捉（F3 全局开关）</string></property>
+         <property name="checked"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupSnapKinds">
+         <property name="title"><string>捕捉类型</string></property>
+         <layout class="QGridLayout" name="gridSnap">
+          <item row="0" column="0"><widget class="QCheckBox" name="checkSnapEndpoint"><property name="text"><string>边界点 / 端点 / 顶点</string></property><property name="toolTip"><string>直线端点、多段线每个顶点、圆弧起终点、文字插入点等几何边界</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="0" column="1"><widget class="QCheckBox" name="checkSnapMidpoint"><property name="text"><string>线段中点 / 弧中点</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="1" column="0"><widget class="QCheckBox" name="checkSnapCenter"><property name="text"><string>中心 / 圆心</string></property><property name="toolTip"><string>圆、圆弧、椭圆的中心，以及闭合多段线的面积中心</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="1" column="1"><widget class="QCheckBox" name="checkSnapQuadrant"><property name="text"><string>圆 / 弧象限点</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="2" column="0"><widget class="QCheckBox" name="checkSnapIntersection"><property name="text"><string>交点</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="2" column="1"><widget class="QCheckBox" name="checkSnapPerpendicular"><property name="text"><string>垂足</string></property><property name="toolTip"><string>从上一个点向附近线段作垂线；需要先点取一个基点</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="3" column="0"><widget class="QCheckBox" name="checkSnapNearest"><property name="text"><string>最近点</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="3" column="1"><widget class="QCheckBox" name="checkSnapInsertion"><property name="text"><string>文字 / 标注插入点</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item row="4" column="0"><widget class="QCheckBox" name="checkSnapNode"><property name="text"><string>点对象（POINT）</string></property><property name="checked"><bool>true</bool></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="layoutSnapRadius">
+         <item><widget class="QLabel" name="labelRadius"><property name="text"><string>捕捉半径：</string></property></widget></item>
+         <item><widget class="QSpinBox" name="spinSnapRadius"><property name="minimum"><number>3</number></property><property name="maximum"><number>40</number></property><property name="value"><number>12</number></property><property name="suffix"><string> px</string></property></widget></item>
+         <item><widget class="QPushButton" name="btnSnapDefaults"><property name="text"><string>恢复默认</string></property></widget></item>
+         <item><spacer name="spacerSnapRadius"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+        </layout>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelSnapNote">
+         <property name="text"><string>光标靠近图纸时会显示对应标记：方块=边界点，三角=中点，圆+十字=中心，菱形=象限点，X=交点，直角=垂足。优先级：端点 / 交点 / 中心 / 中点 / 象限点 / 最近点。按钮位置与尺寸不变，设置只影响光标行为。</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item><spacer name="spacerSnap"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+      </layout>
+     </widget>
     </widget>
    </item>
    <item>
