@@ -110,8 +110,22 @@ src/ilovecad/ui/about.ui
 
 用 `pyside6-designer` 打开修改，保存后执行 `python scripts/compile_ui.py`
 重新编译，再重启程序即可生效。编译产物放在 `src/ilovecad/ui/generated/`
-（不入库）。若尚未编译，程序会自动用 `QUiLoader` 直接加载 `.ui`，所以改完
-不编译也能立即预览。
+（不入库）。程序启动时会自动比对 `.ui` 与编译产物的时间戳，发现改动就自动
+重编，所以改完直接启动也能立即预览。
+
+## 自检
+
+```bash
+python scripts/selftest.py
+# 可选：加入一张高版本图纸检查源头降版本
+ILOVECAD_HIGH_VERSION_SAMPLE=/path/to/example_2018.dwg python scripts/selftest.py
+```
+
+自检会串起完整链路：文档模型 → AC1018 DXF → `dwgwrite --as r2004` → 文件头
+校验 → 回读实体数与类型一致 → DisplayList → 独立矢量 PDF → 离屏主窗口截图 →
+高版本源头降版本。脚本默认用 Qt 的 `offscreen` 平台以便无桌面运行；该平台在
+Windows 上不注册系统字体，截图文字会显示为方框，真实 `windows` 平台显示正常
+（可用 `QT_QPA_PLATFORM=windows` 覆盖）。
 
 ## 版本策略
 
@@ -132,8 +146,10 @@ src/ilovecad/ui/about.ui
   并对每次写入做回读校验。
 * SHX 字体不做完整字库，中文 / 特殊符号以系统字体近似替代，缺失时在导入
   报告中列出。
-* 经 DXF 中转时，XDATA / 部分复杂对象可能丢失；保存前会明确列出并需确认，
-  **不会静默丢数据**。
+* 保存时会用**结构完整的 AC1018 DXF 骨架**重建模型（含 `BLOCK_RECORD` 表、
+  唯一句柄与 `330` owner 引用——LibreDWG 的 DXF importer 缺少这些会静默丢弃
+  全部实体），因此原图的 XDATA / 代理对象 / 复杂块定义不会原样回写；保存前
+  会明确列出将丢失的对象并需要确认，**不会静默丢数据**。
 
 ## 许可
 
@@ -143,4 +159,7 @@ src/ilovecad/ui/about.ui
 
 ## 仓库
 
-当前工作区已 `git init`，远程公开仓库地址待项目所有者提供后添加并推送。
+公开仓库：<https://github.com/pxhhero-bit/ilovecad>（`main` 分支，`origin`）。
+本项目不提交 LibreDWG 二进制，克隆后按「快速开始」执行
+`python scripts/fetch_libredwg.py` 获取锁定版本（校验值见
+`third_party/libredwg/PIN.json`）。
