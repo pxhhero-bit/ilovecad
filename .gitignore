@@ -21,6 +21,7 @@ third_party/libredwg/tools.json
 src/ilovecad/ui/generated/
 
 # Local user state and test scratch
+.workbuddy/
 *.dwg.bak
 *.tmp
 screenshots/
