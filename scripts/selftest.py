@@ -122,6 +122,198 @@ def snap_checks() -> dict:
     return {k: v for k, v in results.items() if not isinstance(v, snap.SnapResult)}
 
 
+def redteam_checks(kernel: LibreDwgKernel, result: dict) -> dict:
+    """Regression checks for the defects a real-world drawing exposed."""
+    from ilovecad.kernel.core import KernelError
+    from ilovecad.kernel.dxf_codec import _decode, parse_dxf, write_dxf
+    from ilovecad.tools.commands import UndoStack
+    from ilovecad.ui.main_window import MainWindow
+
+    checks: dict = {}
+
+    step("红队回归：DXF 编码容错（一处坏字节不得毁掉全图中文）")
+    raw = ("0\nLAYER\n2\n粗实线\n0\nEOF\n").encode("utf-8") + b"\xe7\n"
+    text, repaired = _decode(raw)
+    assert "粗实线" in text, "isolated bad byte degraded the whole DXF to mojibake"
+    assert repaired >= 1
+    checks["encoding_repaired"] = repaired
+
+    step("红队回归：写出统计、bulge 保真、未知类型拒绝、源单位不改写")
+    d = DwgDocument()
+    d.add(Entity(0, "LWPOLYLINE", "0", data={
+        "pts": [(0.0, 0.0, 0.5), (10.0, 0.0, 0.0)], "closed": False}))
+    d.add(Entity(0, "HATCH", "0", data={
+        "paths": [[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)],
+                  [(2.0, 2.0), (3.0, 2.0), (3.0, 3.0)]]}))
+    d.add(Entity(0, "3DFACE", "0", data={"pts": [(0, 0), (1, 0), (1, 1)]}))
+    d.source_units = 0
+    d.units = 4
+    stats: dict = {}
+    payload = write_dxf(d, stats)
+    assert stats["written"] == 3, stats
+    assert stats["source"] == 3 and stats["skipped"]["3DFACE"] == 1, stats
+    assert stats["converted"]["HATCH→LWPOLYLINE"] == 1, stats
+    assert b"$INSUNITS\n70\n0\n" in payload, "source $INSUNITS was relabelled"
+    assert b"42\n0.500000\n" in payload, "polyline bulge was dropped"
+    back, _ = parse_dxf(payload)
+    assert len(back.entities) == 3 and len(back.layers) >= 1
+    assert back.entities[0].data["pts"][0][2] == 0.5
+    blocked = WORK / "redteam_must_not_exist.dwg"
+    blocked.unlink(missing_ok=True)
+    try:
+        kernel.write(d, blocked)
+        raise AssertionError("unknown entity type was silently written")
+    except KernelError as exc:
+        assert "拒绝" in str(exc)
+    assert not blocked.exists(), "a rejected write still touched the target"
+    checks["writer_stats"] = {"written": stats["written"],
+                              "converted": dict(stats["converted"]),
+                              "skipped": dict(stats["skipped"])}
+
+    step("红队回归：大图纸撤销栈使用紧凑快照与动态上限")
+    big = DwgDocument()
+    for i in range(5001):
+        big.add(Entity(0, "POINT", "0", data={"p": (float(i), 0.0)}))
+    stack = UndoStack(big)
+    assert stack._effective_limit() == 20
+    old_color = big.entities[0].color
+    assert stack.perform("test", lambda: setattr(big.entities[0], "color", 3))
+    assert isinstance(stack._undo[-1].before, bytes)
+    stack.undo()
+    assert big.entities[0].color == old_color
+    stack.redo()
+    assert big.entities[0].color == 3
+    checks["undo"] = {"limit": stack._effective_limit(),
+                      "snapshot_bytes": len(stack._undo[-1].before)}
+
+    step("红队回归：源文件保护")
+    probe = MainWindow()
+    probe.doc.downgraded = True
+    probe.doc.source_version = "AC1032"
+    probe.current_path = WORK / "source.dxf"
+    assert "DXF" in probe._source_protect_reason()
+    probe.current_path = WORK / "source.dwg"
+    assert "高版本" in probe._source_protect_reason()
+    probe.doc.downgraded = False
+    probe.doc.source_version = TARGET_VERSION
+    assert probe._source_protect_reason() == ""
+    risks = probe._save_risk_lines()
+
+    step("红队回归：图层管理 / 属性编辑 / 镜像缩放 / 单位设置页")
+    from ilovecad.model import layer_ops
+    from ilovecad.tools import properties
+    from ilovecad.ui.layer_manager import LayerManagerDialog
+    from ilovecad.ui.main_window import SettingsDialog
+    import ilovecad.ui.main_window as mw
+
+    ed = DwgDocument()
+    le = ed.add(Entity(0, "LINE", "WALL",
+                       data={"a": (0.0, 0.0), "b": (10.0, 0.0)}))
+    ce = ed.add(Entity(0, "CIRCLE", "AXIS",
+                       data={"c": (5.0, 5.0), "r": 2.0}))
+    le.selected = ce.selected = True
+    layer_ops.create_layer(ed, "TEMP", color=3)
+    assert "TEMP" in ed.layers
+    assert layer_ops.rename_layer(ed, "TEMP", "TEMP2") == 0
+    assert len(properties.rows(ed, ed.entities)) >= 6
+    assert properties.apply_value(ed, [ce], "data:r", "3.5") == 1
+    assert ce.data["r"] == 3.5
+    layer_ops.set_flags(ed, "AXIS", locked=True)
+    assert properties.editable_entities(ed, [ce]) == []
+    assert le.clone().transform("mirror", (0.0, 0.0), (0.0, 1.0)).data["b"] == (-10.0, 0.0)
+    scaled = ce.clone().transform("scale", (0.0, 0.0), 2.0)
+    assert scaled.data["c"] == (10.0, 10.0)
+    assert scaled.data["r"] == ce.data["r"] * 2.0
+    assert le.clone().transform("scale", (0.0, 0.0), 2.0, 3.0).data["b"] == (20.0, 0.0)
+    layer_ops.set_flags(ed, "AXIS", locked=False)
+    lm = LayerManagerDialog(ed, "0", UndoStack(ed))
+    assert hasattr(lm.ui, "layerTable")
+    lm.close()
+    sd = SettingsDialog(probe.theme, probe.canvas.snap_config, probe)
+    assert sd.ui.tabSettings.count() == 3
+    units, precision = sd.units_precision()
+    assert isinstance(units, int) and isinstance(precision, int)
+    sd.close()
+
+    # A protected source must never be overwritten by Ctrl+S: save() explains
+    # and redirects to Save As. Patch away the modal dialogs.
+    protected = WORK / "protected_source.dwg"
+    protected.write_bytes(b"AC1032-ORIGINAL")
+    digest = hashlib.sha256(protected.read_bytes()).hexdigest()
+    probe.current_path = protected
+    probe.doc.downgraded = True
+    probe.doc.source_version = "AC1032"
+    info_calls: list[str] = []
+    orig_info = mw.QMessageBox.information
+    orig_save = mw.QFileDialog.getSaveFileName
+    mw.QMessageBox.information = staticmethod(
+        lambda *a, **k: info_calls.append("protected"))
+    mw.QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: ("", ""))
+    try:
+        probe.save()
+    finally:
+        mw.QMessageBox.information = orig_info
+        mw.QFileDialog.getSaveFileName = orig_save
+    assert info_calls == ["protected"], "source protection did not engage"
+    assert hashlib.sha256(protected.read_bytes()).hexdigest() == digest
+    probe.close()
+    checks["source_protected"] = True
+    checks["edit_features"] = True
+
+    step("真实图纸（可选）：高版本 / 中文 / 往返 / 原文件不变")
+    real = Path(os.environ.get("ILOVECAD_REAL_DRAWING", ""))
+    if not real.is_file():
+        candidates = sorted(p for p in (ROOT / "tests").glob("*.dwg")
+                            if p.is_file())
+        real = candidates[0] if candidates else Path("")
+    if not real.is_file():
+        checks["realworld"] = "skipped (no drawing in tests/)"
+        result["redteam"] = checks
+        return checks
+
+    before = hashlib.sha256(real.read_bytes()).hexdigest()
+    doc, report = kernel.read(real)
+    layer_names = "\n".join(doc.layers)
+    text_values = "\n".join(str(e.data.get("text", ""))
+                            for e in doc.entities if e.kind == "TEXT")
+    assert not any(tag in layer_names + text_values
+                   for tag in ("Ã", "ä¸", "å®", "æ ")), "UTF-8 mojibake survived"
+    assert doc.source_units is not None
+    assert len(doc.entities) > 100 and len(doc.layers) > 1
+    target = WORK / "realworld_r2004.dwg"
+    saved = kernel.write(doc, target)
+    assert target.read_bytes()[:6].decode("ascii") == TARGET_VERSION
+    assert "written" in saved.counts
+    back_doc, _ = kernel.read(target)
+    # HATCH loops are each written as a polyline, so the output entity count
+    # can legitimately exceed the in-memory entity count. Compare against the
+    # writer's own honest count instead, which the kernel already re-verified.
+    assert len(back_doc.entities) == saved.counts["written"], \
+        "round-trip entity count differs from what was written"
+    assert len(back_doc.entities) >= len(doc.entities), "round-trip lost entities"
+    assert set(back_doc.layers) == set(doc.layers), "round-trip lost layers"
+    assert not [e for e in doc.entities if e.kind == "HATCH"
+                and any(abs(p[0]) < 1e-9 and abs(p[1]) < 1e-9
+                        for path in e.data.get("paths", []) for p in path)], \
+        "HATCH elevation point produced a fake full-sheet diagonal"
+    assert hashlib.sha256(real.read_bytes()).hexdigest() == before
+    dl = build(back_doc)
+    real_pdf = WORK / "realworld.pdf"
+    PdfRenderer.export(str(real_pdf), back_doc, dl, PdfOptions(paper="A3"), None)
+    assert real_pdf.read_bytes()[:5] == b"%PDF-"
+    checks["realworld"] = {
+        "file": real.name, "source_version": report.source_version,
+        "downgraded": report.downgraded, "entities": len(doc.entities),
+        "layers": len(doc.layers), "source_units": doc.source_units,
+        "warnings": report.warnings,
+        "reread_entities": len(back_doc.entities),
+        "saved_notes": saved.notes[:4], "pdf_bytes": real_pdf.stat().st_size,
+        "source_unchanged": True,
+    }
+    result["redteam"] = checks
+    return checks
+
+
 def main() -> int:
     WORK.mkdir(parents=True, exist_ok=True)
     SHOTS.mkdir(exist_ok=True)
@@ -319,6 +511,9 @@ def main() -> int:
             "entities": len(hv_doc.entities),
             "steps": hv_report.steps,
         }
+
+    step("红队查漏补缺回归 + 真实图纸")
+    redteam_checks(kernel, result)
 
     step("SPDX 头覆盖检查")
     sources = [p for p in list((ROOT / "src").rglob("*.py"))

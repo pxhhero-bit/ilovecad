@@ -78,6 +78,39 @@
        <item><spacer name="spacerSnap"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
       </layout>
      </widget>
+     <widget class="QWidget" name="tabUnits">
+      <attribute name="title"><string>单位与精度</string></attribute>
+      <layout class="QVBoxLayout" name="vboxUnits">
+       <item>
+        <widget class="QGroupBox" name="groupDrawUnits">
+         <property name="title"><string>图纸单位</string></property>
+         <layout class="QHBoxLayout" name="layoutUnits">
+          <item><widget class="QLabel" name="labelUnits"><property name="text"><string>单位：</string></property></widget></item>
+          <item><widget class="QComboBox" name="comboUnits"/></item>
+          <item><widget class="QPushButton" name="btnUnitsDefaults"><property name="text"><string>恢复默认</string></property></widget></item>
+          <item><spacer name="spacerUnits"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupPrecision">
+         <property name="title"><string>显示精度</string></property>
+         <layout class="QHBoxLayout" name="layoutPrecision">
+          <item><widget class="QLabel" name="labelPrecision"><property name="text"><string>小数位：</string></property></widget></item>
+          <item><widget class="QSpinBox" name="spinPrecision"><property name="minimum"><number>0</number></property><property name="maximum"><number>8</number></property><property name="value"><number>4</number></property><property name="suffix"><string> 位</string></property></widget></item>
+          <item><spacer name="spacerPrecision"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelUnitsNote">
+         <property name="text"><string>单位写入保存文件的 $INSUNITS 头变量，同时决定测量结果后缀、线宽换算与 PDF 打印比例；只改变「1 个图形单位等于多少」，不会缩放图纸坐标。精度只影响显示与导出的小数位，不改动几何数据。设置仅保存在本机 INI。命令 UNITS 可直接打开本页。</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item><spacer name="spacerUnitsBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+      </layout>
+     </widget>
     </widget>
    </item>
    <item>

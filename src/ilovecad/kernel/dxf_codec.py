@@ -7,7 +7,7 @@ between the kernel and IloveCAD's in-memory 2D document model.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Iterable
 
 from ..model import geometry as g
@@ -22,19 +22,70 @@ SUPPORTED = {"LINE", "LWPOLYLINE", "POLYLINE", "CIRCLE", "ARC", "ELLIPSE",
              "POINT", "TEXT", "MTEXT", "SOLID", "SPLINE", "HATCH",
              "DIMENSION", "INSERT"}
 
+# Standard ACI linetype definitions, in drawing units. A positive segment is
+# a dash, a negative one a gap; 49 codes repeat for the full pattern.
+LTYPE_PATTERNS = {
+    "CONTINUOUS": [],
+    "DASHED": [0.5, -0.25],
+    "HIDDEN": [0.25, -0.125],
+    "CENTER": [0.75, -0.125, 0.125, -0.125],
+    "PHANTOM": [0.75, -0.125, 0.125, -0.125, 0.125, -0.125],
+    "DOT": [0.0, -0.125],
+    "DASHDOT": [0.5, -0.125, 0.0, -0.125],
+    "BORDER": [0.5, -0.125, 0.5, -0.125, 0.0, -0.125],
+    "DIVIDE": [0.5, -0.125, 0.0, -0.125, 0.0, -0.125],
+}
+
 
 def normalize_newlines(data: bytes) -> bytes:
     """LibreDWG on Windows emits CR CR LF; normalise to plain LF."""
     return data.replace(b"\r\r\n", b"\n").replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
-def _decode(data: bytes) -> str:
-    for enc in ("utf-8-sig", "gbk", "cp1252", "latin-1"):
+def _decode(data: bytes) -> tuple[str, int]:
+    """Decode DXF bytes, tolerating isolated broken multi-byte sequences.
+
+    LibreDWG occasionally emits a truncated UTF-8 sequence inside a Chinese
+    label.  A whole-file strict decode then fails, and an all-or-nothing
+    fallback to cp1252/latin-1 turns *every* Chinese layer name and note into
+    mojibake.  Decode line by line instead: DXF is a line-oriented format, so
+    one bad byte can only damage its own line.  When most lines are valid
+    UTF-8, damaged lines stay UTF-8 (with replacement chars); a genuinely
+    GBK-encoded file is still decoded as GBK.
+    """
+    try:
+        return data.decode("utf-8-sig"), 0
+    except UnicodeDecodeError:
+        pass
+
+    raw_lines = data.split(b"\n")
+    decoded: list[str | None] = [None] * len(raw_lines)
+    utf8_ok = 0
+    for idx, raw in enumerate(raw_lines):
         try:
-            return data.decode(enc)
+            decoded[idx] = raw.decode("utf-8")
+            utf8_ok += 1
         except UnicodeDecodeError:
             continue
-    return data.decode("utf-8", errors="replace")
+    prefer_utf8 = utf8_ok >= max(1, int(len(raw_lines) * 0.6))
+
+    repaired = 0
+    for idx, raw in enumerate(raw_lines):
+        if decoded[idx] is not None:
+            continue
+        if not prefer_utf8:
+            try:
+                decoded[idx] = raw.decode("gbk")
+                continue
+            except UnicodeDecodeError:
+                pass
+        line = raw.decode("utf-8", errors="replace")
+        repaired += line.count("\ufffd")
+        decoded[idx] = line
+    text = "\n".join(decoded)  # type: ignore[arg-type]
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    return text, repaired
 
 
 def _pairs(text: str) -> list[tuple[str, str]]:
@@ -148,8 +199,56 @@ def _parse_entity(kind: str, groups) -> Entity | None:
             return None
         d = {"pts": pts}
     elif kind == "HATCH":
-        pts = _xy_pairs(groups, "10", "20")
-        d = {"paths": [pts] if len(pts) > 2 else []}
+        # A HATCH starts with an elevation point (10/20/30, usually 0,0) and
+        # an extrusion vector, THEN one or more boundary loops announced by
+        # group 93 (vertex count). Naively collecting every 10/20 pair mixed
+        # the elevation point into the loop — drawing a huge fake diagonal
+        # across the sheet — and merged separate loops into one polygon.
+        vertices: list[tuple[float, float, float]] = []
+        sizes: list[int] = []
+        i = 0
+        elevation_skipped = False
+        while i < len(groups):
+            gc, gv = groups[i]
+            if gc == "93":
+                sizes.append(max(0, int(_f(gv))))
+                i += 1
+                continue
+            if gc != "10":
+                i += 1
+                continue
+            x, y, bulge = _f(gv), 0.0, 0.0
+            j = i + 1
+            while j < len(groups) and groups[j][0] in ("20", "42"):
+                if groups[j][0] == "20":
+                    y = _f(groups[j][1])
+                else:
+                    bulge = _f(groups[j][1])
+                j += 1
+            following = {groups[k][0]
+                         for k in range(j, min(j + 3, len(groups)))}
+            if not elevation_skipped and following & {"30", "210"}:
+                elevation_skipped = True   # the header elevation point
+                i = j
+                continue
+            vertices.append((x, y, bulge))
+            i = j
+        if not vertices:
+            vertices = [(p[0], p[1], 0.0) for p in
+                        _xy_pairs(groups, "11", "21")]
+        paths: list[list[tuple[float, float, float]]] = []
+        if sizes and sum(sizes) <= len(vertices):
+            pos = 0
+            for n in sizes:
+                seg = vertices[pos:pos + n]
+                pos += n
+                if len(seg) >= 2:
+                    paths.append(seg)
+            if pos < len(vertices):
+                paths.append(vertices[pos:])
+        elif len(vertices) >= 3:
+            paths = [vertices]     # minimal writers omit group 93
+        d = {"paths": paths}
         if not d["paths"]:
             return None
     elif kind == "INSERT":
@@ -166,13 +265,18 @@ def _parse_entity(kind: str, groups) -> Entity | None:
 
 def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
     """Parse a DXF byte stream into a 2D document plus an import report dict."""
-    text = _decode(normalize_newlines(data))
+    text, repaired = _decode(normalize_newlines(data))
     pairs = _pairs(text)
     doc = DwgDocument()
     blocks: dict[str, list[Entity]] = defaultdict(list)
     block_base: dict[str, tuple[float, float]] = {}
     header: dict[str, list[tuple[str, str]]] = {}
-    report: dict = {"skipped": defaultdict(int), "notes": [], "block_expanded": 0}
+    report: dict = {"skipped": defaultdict(int), "notes": [],
+                    "warnings": [], "block_expanded": 0}
+    if repaired:
+        report["warnings"].append(
+            f"DXF 中有 {repaired} 处损坏的文本字节已按 UTF-8 容错替换；"
+            "仅影响对应字符，不影响图纸几何")
 
     section = None
     table = None
@@ -266,6 +370,13 @@ def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
         doc.entities.append(pending_poly)
 
     doc.units = int(_f(_first(header.get("$INSUNITS", []), "70", 4), 4))
+    # Keep the source's own unit marker: the UI may override doc.units with a
+    # local display preference, but saving must not silently relabel a drawing.
+    doc.source_units = doc.units
+    if doc.units == 0:
+        report["warnings"].append(
+            "源图纸 $INSUNITS=0（无单位）；测量数值按本机显示单位解释，"
+            "保存时保留源单位标记，请自行确认图纸实际单位")
     doc.source_version = (_first(header.get("$ACADVER", []), "1", "") or "").strip().upper()
 
     def expand(name: str, p, sx: float, sy: float, rot: float, depth: int = 0):
@@ -315,6 +426,14 @@ def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
     report["layers"] = len(doc.layers)
     report["entities"] = len(doc.entities)
     report["by_kind"] = dict(doc.entity_count_by_kind())
+    if report["by_kind"].get("SPLINE"):
+        report["notes"].append(
+            f"SPLINE × {report['by_kind']['SPLINE']} 仅按控制点折线显示 / 写出，"
+            "曲线形状会有偏差，测量时请勿以该折线代替原曲线")
+    if report["by_kind"].get("HATCH"):
+        report["notes"].append(
+            f"HATCH × {report['by_kind']['HATCH']} 按边界多段线显示 / 写出，"
+            "填充图案不会还原")
     report["skipped"] = dict(report["skipped"])
     doc.skipped.update(report["skipped"])
     doc.notes.extend(report["notes"])
@@ -358,14 +477,24 @@ class _Writer:
         return "".join(self.lines).encode("utf-8")
 
 
-def write_dxf(doc: DwgDocument) -> bytes:
+def write_dxf(doc: DwgDocument, stats: dict | None = None) -> bytes:
     """Serialise the 2D model into a structurally complete AC1018 ASCII DXF.
 
     LibreDWG's DXF importer requires a BLOCK_RECORD table, unique handles and
     owner (330) references. Without them dwgwrite reports
     "dwg.block_control ... missing" and silently drops every entity. The
     skeleton below mirrors a dwgread -O DXF export and round-trips R2004.
+
+    ``stats`` (optional) receives an honest account of the conversion: the
+    exact number of DXF entities written, which source types were approximated
+    by another DXF type, and which entities were skipped.  The writer must
+    never claim a successful round-trip while silently dropping geometry.
     """
+    if stats is not None:
+        stats.clear()
+        stats.update({"source": len(doc.entities), "written": 0,
+                      "converted": Counter(), "skipped": Counter(),
+                      "dropped": 0, "point_fallback": 0})
     w = _Writer()
     # Fixed low handles for tables/records; entity handles start at 0x1000 so
     # they can never collide with table records no matter how many layers exist.
@@ -382,7 +511,9 @@ def write_dxf(doc: DwgDocument) -> bytes:
     w.p(999, "IloveCAD 2D / GPL-3.0-or-later")
     w.p(0, "SECTION"); w.p(2, "HEADER")
     w.p(9, "$ACADVER"); w.p(1, TARGET_VERSION)
-    w.p(9, "$INSUNITS"); w.p(70, doc.units)
+    # A locally chosen display unit must never relabel the source drawing.
+    source_units = doc.source_units if doc.source_units is not None else doc.units
+    w.p(9, "$INSUNITS"); w.p(70, source_units)
     w.p(9, "$MEASUREMENT"); w.p(70, 1)
     w.p(9, "$HANDSEED"); w.p(5, "__HANDSEED__")
     b = doc.bounds() or (0, 0, 100, 100)
@@ -391,12 +522,29 @@ def write_dxf(doc: DwgDocument) -> bytes:
     w.p(0, "ENDSEC")
 
     w.p(0, "SECTION"); w.p(2, "TABLES")
+    # Every linetype referenced by a layer or entity needs a table record,
+    # otherwise LibreDWG's DXF importer drops the reference on write-back.
+    linetypes = {"CONTINUOUS"}
+    for layer in doc.layers.values():
+        name = (layer.linetype or "CONTINUOUS").upper()
+        if name and name != "BYLAYER":
+            linetypes.add(name)
+    for ent in doc.entities:
+        name = (ent.linetype or "").upper()
+        if name and name != "BYLAYER":
+            linetypes.add(name)
+    linetypes = {name for name in linetypes if name in LTYPE_PATTERNS}
     w.p(0, "TABLE"); w.p(2, "LTYPE"); w.p(5, "3"); w.p(330, "0")
-    w.p(100, "AcDbSymbolTable"); w.p(70, 1)
-    w.p(0, "LTYPE"); w.p(5, "30"); w.p(330, "3")
-    w.p(100, "AcDbSymbolTableRecord"); w.p(100, "AcDbLinetypeTableRecord")
-    w.p(2, "CONTINUOUS"); w.p(70, 0); w.p(3, "Solid line")
-    w.p(72, 65); w.p(73, 0); w.p(40, 0)
+    w.p(100, "AcDbSymbolTable"); w.p(70, len(linetypes))
+    for i, name in enumerate(sorted(linetypes)):
+        pattern = LTYPE_PATTERNS[name]
+        w.p(0, "LTYPE"); w.p(5, format(0x30 + i, "X")); w.p(330, "3")
+        w.p(100, "AcDbSymbolTableRecord"); w.p(100, "AcDbLinetypeTableRecord")
+        w.p(2, name); w.p(70, 0); w.p(3, f"IloveCAD {name}")
+        w.p(72, 65); w.p(73, len(pattern))
+        w.p(40, sum(abs(seg) for seg in pattern))
+        for seg in pattern:
+            w.p(49, f"{seg:.6f}")
     w.p(0, "ENDTAB")
 
     layers = sorted(doc.layers.values(), key=lambda l: l.name)
@@ -444,6 +592,16 @@ def write_dxf(doc: DwgDocument) -> bytes:
         w.p(100, "AcDbEntity")
         w.common(e)
         w.p(100, subclass or subclasses[kind])
+        if stats is not None:
+            stats["written"] += 1
+
+    def converted(source_kind: str, target_kind: str) -> None:
+        if stats is not None and source_kind != target_kind:
+            stats["converted"][f"{source_kind}→{target_kind}"] += 1
+
+    def dropped() -> None:
+        if stats is not None:
+            stats["dropped"] += 1
 
     w.p(0, "SECTION"); w.p(2, "ENTITIES")
     for e in doc.entities:
@@ -453,17 +611,38 @@ def write_dxf(doc: DwgDocument) -> bytes:
             begin("LINE", e)
             w.xyz(*d["a"]); w.xyz(*d["b"], xcode=11, ycode=21)
         elif k in ("LWPOLYLINE", "POLYLINE", "SPLINE", "HATCH"):
-            points = list(d.get("pts", [])) or (d.get("paths", [None])[0] or [])
-            points = [tuple(p[:2]) for p in points if p is not None]
-            if len(points) < 2:
-                continue
-            begin("LWPOLYLINE", e)
-            w.p(90, len(points)); w.p(70, 1 if (d.get("closed") or k == "HATCH") else 0)
-            for pt in points:
-                w.p(10, f"{pt[0]:.6f}"); w.p(20, f"{pt[1]:.6f}")
-                bulge = pt[2] if len(pt) > 2 else 0.0
-                if bulge:
-                    w.p(42, f"{bulge:.6f}")
+            # HATCH may carry several boundary loops; every loop becomes its
+            # own closed polyline instead of silently dropping all but one.
+            if k == "HATCH" and isinstance(d.get("paths"), list):
+                sequences = [list(seq) for seq in d["paths"] if seq]
+            else:
+                pts = d.get("pts") or []
+                sequences = [list(pts)] if pts else []
+            for seq in sequences:
+                points = [tuple(p) for p in seq
+                          if isinstance(p, (tuple, list)) and len(p) >= 2]
+                if len(points) == 1:
+                    # A degenerate HATCH loop still carries a real position;
+                    # keep it as a POINT rather than silently dropping data.
+                    begin("POINT", e)
+                    w.xyz(points[0][0], points[0][1])
+                    if stats is not None:
+                        stats["point_fallback"] += 1
+                    continue
+                if len(points) < 2:
+                    dropped()
+                    continue
+                begin("LWPOLYLINE", e)
+                w.p(90, len(points))
+                w.p(70, 1 if (d.get("closed") or k == "HATCH") else 0)
+                for pt in points:
+                    w.p(10, f"{pt[0]:.6f}"); w.p(20, f"{pt[1]:.6f}")
+                    # Keep the vertex bulge: dropping it turns arc segments of
+                    # a polyline into straight lines on every save.
+                    bulge = pt[2] if len(pt) > 2 else 0.0
+                    if bulge:
+                        w.p(42, f"{bulge:.6f}")
+            converted(k, "LWPOLYLINE")
         elif k == "CIRCLE":
             begin("CIRCLE", e); w.xyz(*d["c"]); w.p(40, f"{d['r']:.6f}")
         elif k == "ARC":
@@ -483,13 +662,20 @@ def write_dxf(doc: DwgDocument) -> bytes:
             w.p(1, _dxf_text(d.get("text", "")))
             w.p(50, f"{d.get('rotation', 0.0):.6f}")
             w.p(7, "STANDARD")
+            converted(k, "TEXT")
         elif k == "SOLID":
             pts = list(d.get("pts", []))
             if len(pts) < 3:
+                dropped()
                 continue
             begin("SOLID", e)
             for idx, pt in enumerate(pts[:4]):
                 w.xyz(pt[0], pt[1], xcode=10 + idx, ycode=20 + idx)
+        else:
+            # Never silently discard an entity type we do not know how to
+            # serialise; the caller reports it and refuses the write if needed.
+            if stats is not None:
+                stats["skipped"][k or "UNKNOWN"] += 1
     w.p(0, "ENDSEC")
     w.p(0, "EOF")
     return "".join(w.lines).replace("__HANDSEED__", format(next_handle, "X")).encode("utf-8")

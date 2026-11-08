@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from dataclasses import dataclass, field
 
 from . import geometry as g
@@ -58,7 +59,10 @@ class Entity:
             pts = [tuple(p[:2]) for p in d.get("pts", [])]
             return [(pts, False)] if len(pts) > 1 else []
         if k == "HATCH":
-            return [(list(path), True) for path in d.get("paths", []) if len(path) > 2]
+            # Boundary vertices carry an optional third element (bulge) for
+            # the DXF writer; display geometry is strictly 2D.
+            return [([tuple(p[:2]) for p in path], True)
+                    for path in d.get("paths", []) if len(path) > 2]
         if k == "POINT":
             p = tuple(d["p"])
             return [([(p[0] - 0.5, p[1]), (p[0] + 0.5, p[1])], False),
@@ -177,14 +181,30 @@ class Entity:
         if self.kind in ("TEXT", "MTEXT", "DIMENSION"):
             p = tuple(self.data.get("p", (0, 0)))
             h = float(self.data.get("height", 2.5)) or 2.5
-            w = float(self.data.get("width", 0)) or len(str(self.data.get("text", ""))) * h * 0.7
+            # Group 41 is a relative width factor, NOT an absolute width.
+            # Treating it as millimetres (or extrapolating a long formatting
+            # string) invented extents tens of thousands of units away and
+            # wrecked zoom-extents / full-page PDF scaling on real drawings.
+            factor = float(self.data.get("width", 0) or 1.0)
+            factor = max(0.1, min(factor, 5.0))
+            text = re.sub(r"\\[A-Za-z][^;]*;|\{[^{}]*\}", "",
+                          str(self.data.get("text", "")))
+            chars = max(1, min(len(text.strip()), 120))
+            w = chars * h * 0.6 * factor
             b = g.expand_bounds(b, (p[0], p[1] - h, p[0] + w, p[1] + h))
         return b
 
     # --------------------------------------------------------------- transform
     def transform(self, op: str, *args) -> "Entity":
-        """op = translate(dx,dy) | rotate(origin,deg) | scale(origin,sx[,sy])"""
+        """op = translate(dx,dy) | rotate(origin,deg) | scale(origin,sx[,sy])
+        | mirror(a,b)   — mirror reflects about the infinite line through a-b.
+        """
         d = self.data
+        # scale() is called as (origin, sx) or (origin, sx, sy). Earlier code
+        # indexed args[2] unconditionally, which crashed the SC command on
+        # every single-factor scale.
+        sx = args[1] if len(args) > 1 else 1.0
+        sy = args[2] if len(args) > 2 else sx
 
         def px(p):
             p = tuple(p[:2])
@@ -193,8 +213,9 @@ class Entity:
             if op == "rotate":
                 return g.rotate(p, tuple(args[0]), args[1])
             if op == "scale":
-                sy = args[3] if len(args) > 3 else args[2]
-                return g.scale_point(p, tuple(args[0]), args[2], sy)
+                return g.scale_point(p, tuple(args[0]), sx, sy)
+            if op == "mirror":
+                return g.mirror_point(p, tuple(args[0]), tuple(args[1]))
             return p
 
         def vec(p):
@@ -202,7 +223,11 @@ class Entity:
             if op == "rotate":
                 return g.rotate(p, (0.0, 0.0), args[1])
             if op == "scale":
-                return (p[0] * args[2], p[1] * args[2])
+                return (p[0] * sx, p[1] * sy)
+            if op == "mirror":
+                a, b = tuple(args[0]), tuple(args[1])
+                return g.mirror_direction(p, (0.0, 0.0),
+                                          (b[0] - a[0], b[1] - a[1]))
             return p
 
         for key in ("a", "b", "c", "p"):
@@ -214,8 +239,11 @@ class Entity:
             for item in d["pts"]:
                 if isinstance(item, (tuple, list)) and len(item) >= 2:
                     q = px(item)
-                    # LWPOLYLINE entries carry a bulge as a third element.
-                    new_pts.append(q + tuple(item[2:]) if len(item) > 2 else q)
+                    tail = tuple(item[2:])
+                    if op == "mirror" and tail and isinstance(tail[0], (int, float)):
+                        # Bulge encodes arc direction; a reflection reverses it.
+                        tail = (-float(tail[0]),) + tail[1:]
+                    new_pts.append(q + tail if tail else q)
                 else:
                     new_pts.append(item)
             d["pts"] = new_pts
@@ -229,10 +257,24 @@ class Entity:
         if op == "scale":
             for key in ("r", "height", "width"):
                 if key in d and isinstance(d[key], (int, float)):
-                    d[key] = float(d[key]) * args[2]
+                    d[key] = float(d[key]) * sx
 
         if op == "rotate" and "rotation" in d:
             d["rotation"] = float(d.get("rotation", 0.0)) + args[1]
+
+        if op == "mirror":
+            a, b = tuple(args[0]), tuple(args[1])
+            axis = math.degrees(math.atan2(b[1] - a[1], b[0] - a[0]))
+            if self.kind == "ARC" and "start" in d and "end" in d:
+                start, end = float(d["start"]), float(d["end"])
+                sweep = g.arc_sweep(start, end)
+                new_start = (2.0 * axis - end) % 360.0
+                d["start"], d["end"] = new_start, new_start + sweep
+            elif self.kind == "ELLIPSE" and "start" in d and "end" in d:
+                start, end = float(d["start"]), float(d["end"])
+                d["start"], d["end"] = -end, -start
+            if "rotation" in d:
+                d["rotation"] = 2.0 * axis - float(d.get("rotation", 0.0))
 
         return self
 

@@ -2,7 +2,7 @@
 """Undo / redo stack for lightweight 2D editing."""
 from __future__ import annotations
 
-import copy
+import pickle
 from dataclasses import dataclass
 
 from ..model.document import DwgDocument
@@ -11,11 +11,18 @@ from ..model.document import DwgDocument
 @dataclass
 class _Step:
     label: str
-    before: list
-    after: list
+    before: bytes
+    after: bytes
 
 
 class UndoStack:
+    """Snapshots entities AND layer definitions.
+
+    Layer rename / delete / style edits mutate entities too, so restoring only
+    the entity list would leave dangling layer references. Both are restored
+    atomically. Units / precision are document metadata, not undoable edits.
+    """
+
     def __init__(self, doc: DwgDocument | None = None):
         self.doc = doc
         self._undo: list[_Step] = []
@@ -30,8 +37,36 @@ class UndoStack:
         self._undo.clear()
         self._redo.clear()
 
-    def _snapshot(self) -> list:
-        return copy.deepcopy(self.doc.entities) if self.doc else []
+    def _snapshot(self) -> bytes:
+        """Compact snapshot of entities + layers.
+
+        A real drawing can hold tens of thousands of entities; two live
+        deepcopies per step would consume hundreds of MB. Serialising to a
+        byte string keeps the same atomic restore semantics at a fraction of
+        the memory. The bytes are produced here and never loaded from a file,
+        so no untrusted pickle data is ever deserialised.
+        """
+        if self.doc is None:
+            return b""
+        return pickle.dumps((self.doc.entities, self.doc.layers),
+                            protocol=pickle.HIGHEST_PROTOCOL)
+
+    def _restore(self, snap: bytes) -> None:
+        if self.doc is None or not snap:
+            return
+        entities, layers = pickle.loads(snap)
+        self.doc.entities = entities
+        self.doc.layers = layers
+
+    def _effective_limit(self) -> int:
+        count = len(self.doc.entities) if self.doc is not None else 0
+        if count > 20000:
+            return min(self.limit, 8)
+        if count > 5000:
+            return min(self.limit, 20)
+        if count > 1000:
+            return min(self.limit, 40)
+        return self.limit
 
     def perform(self, label: str, fn) -> bool:
         if self.doc is None:
@@ -42,7 +77,8 @@ class UndoStack:
         if before == after:
             return False
         self._undo.append(_Step(label, before, after))
-        if len(self._undo) > self.limit:
+        limit = self._effective_limit()
+        while len(self._undo) > limit:
             self._undo.pop(0)
         self._redo.clear()
         return True
@@ -51,7 +87,7 @@ class UndoStack:
         if not self._undo or self.doc is None:
             return None
         step = self._undo.pop()
-        self.doc.entities = copy.deepcopy(step.before)
+        self._restore(step.before)
         self._redo.append(step)
         return step.label
 
@@ -59,7 +95,7 @@ class UndoStack:
         if not self._redo or self.doc is None:
             return None
         step = self._redo.pop()
-        self.doc.entities = copy.deepcopy(step.after)
+        self._restore(step.after)
         self._undo.append(step)
         return step.label
 

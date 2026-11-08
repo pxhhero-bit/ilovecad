@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<ui version="4.0">
+ <class>LayerManagerDialog</class>
+ <widget class="QDialog" name="LayerManagerDialog">
+  <property name="windowTitle"><string>图层管理</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>760</width><height>470</height></rect></property>
+  <layout class="QVBoxLayout" name="vboxLayers">
+   <item>
+    <widget class="QLabel" name="labelLayersTitle">
+     <property name="text"><string>图层管理 · 只作用于当前 2D 文档；保存时写入 AC1018 图层表</string></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QTableWidget" name="layerTable">
+     <property name="columnCount"><number>9</number></property>
+     <column><property name="text"><string>显示</string></property></column>
+     <column><property name="text"><string>冻结</string></property></column>
+     <column><property name="text"><string>锁定</string></property></column>
+     <column><property name="text"><string>当前</string></property></column>
+     <column><property name="text"><string>图层名</string></property></column>
+     <column><property name="text"><string>颜色</string></property></column>
+     <column><property name="text"><string>线型</string></property></column>
+     <column><property name="text"><string>线宽 mm</string></property></column>
+     <column><property name="text"><string>实体数</string></property></column>
+    </widget>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="layoutLayerButtons">
+     <item><widget class="QPushButton" name="btnNewLayer"><property name="text"><string>新建图层</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnRenameLayer"><property name="text"><string>重命名</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnDeleteLayer"><property name="text"><string>删除图层</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnSetCurrent"><property name="text"><string>设为当前</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnAllOn"><property name="text"><string>全部显示</string></property></widget></item>
+     <item><widget class="QPushButton" name="btnAllUnlocked"><property name="text"><string>全部解锁</string></property></widget></item>
+     <item><spacer name="spacerLayers"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+     <item><widget class="QPushButton" name="btnClose"><property name="text"><string>关闭</string></property></widget></item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelLayerHelp">
+     <property name="text"><string>勾选「显示 / 冻结 / 锁定」即时生效；点击「当前」列或「设为当前」可指定绘制图层。双击图层名 / 颜色 / 线型 / 线宽可编辑。锁定图层仍可见、可捕捉，但不能被选中编辑；删除图层时其上的实体会迁移到图层 0。所有改动可用 Ctrl+Z 撤销。</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

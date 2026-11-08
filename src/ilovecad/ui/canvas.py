@@ -6,7 +6,7 @@ import math
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QInputDialog, QWidget
+from PySide6.QtWidgets import QInputDialog, QMessageBox, QWidget
 from ..fonts import ui_font
 from ..preferences import load_snap_config
 
@@ -41,6 +41,8 @@ MODE_HINTS = {
     "move": "移动：先选中对象，再点取基点和目标点。",
     "copy": "复制：先选中对象，再点取基点和目标点。",
     "rotate": "旋转：先选中对象，再点取基点、参考点、目标点。",
+    "mirror": "镜像：先选中对象，再点取镜像轴上的两点，可选择保留原对象。",
+    "scale": "缩放：先选中对象，再点取基点并输入比例（例如 2 或 0.5）。",
     "delete": "删除：删除当前选中的对象。",
 }
 
@@ -99,7 +101,7 @@ class CadCanvas(QWidget):
         self.snapHint.emit("")
         self.mode = "select"
         self.current_layer = "0" if "0" in doc.layers else next(iter(doc.layers), "0")
-        self.view.fit(doc.bounds())
+        self.view.fit(doc.robust_bounds()[0])
         self._revision += 1
         self._emit_hint()
         self.update()
@@ -137,8 +139,17 @@ class CadCanvas(QWidget):
         self.view.width, self.view.height = self.width(), self.height()
         self.update()
 
-    def fit_view(self) -> None:
-        self.view.fit(self.doc.bounds())
+    def fit_view(self, full: bool = False) -> None:
+        if full:
+            self.view.fit(self.doc.bounds())
+            self.statusMessage.emit("已按完整范围显示（包含离群对象）")
+        else:
+            bounds, ignored = self.doc.robust_bounds()
+            self.view.fit(bounds)
+            if ignored:
+                self.statusMessage.emit(
+                    f"全图视图已忽略 {ignored} 个远离主体的离群对象；"
+                    "输入 FITALL 查看完整范围，PDF「全图」始终包含全部对象")
         self.update()
 
     def zoom_in(self) -> None:
@@ -450,7 +461,7 @@ class CadCanvas(QWidget):
             p1 = self.view.to_model(min(a.x(), b.x()), max(a.y(), b.y()))
             p2 = self.view.to_model(max(a.x(), b.x()), min(a.y(), b.y()))
             ids = snapping.entities_in_rect(
-                self.doc, (p1[0], p1[1], p2[0], p2[1]))
+                self.doc, (p1[0], p1[1], p2[0], p2[1]), editable_only=True)
             self._window_selecting = False
             self._rubber = None
             self._drag_origin = None
@@ -463,7 +474,8 @@ class CadCanvas(QWidget):
             return
         if self.mode == "select" and self._drag_origin:
             tol = 10.0 / max(self.view.scale, 1e-9)
-            ent = snapping.nearest_entity(self.doc, self._model_at(QPointF(pos)), tol)
+            ent = snapping.nearest_entity(self.doc, self._model_at(QPointF(pos)), tol,
+                                          editable_only=True)
             if not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.doc.clear_selection()
             if ent:
@@ -508,9 +520,11 @@ class CadCanvas(QWidget):
         self.invalidate()
 
     def delete_selected(self) -> None:
-        ids = self.doc.selected_ids()
+        selected = [e for e in self.doc.entities if e.selected]
+        ids = {e.eid for e in selected if self.doc.editable(e)}
+        skipped = len(selected) - len(ids)
         if not ids:
-            self.statusMessage.emit("没有选中对象")
+            self.statusMessage.emit("没有可编辑的选中对象（可能位于锁定图层）")
             return
         changed = self.undo_stack.perform(
             f"删除 {len(ids)} 个对象",
@@ -519,7 +533,9 @@ class CadCanvas(QWidget):
         if changed:
             self.refresh()
             self.selectionChanged.emit(0)
-            self.statusMessage.emit(f"已删除 {len(ids)} 个对象（可 Ctrl+Z 撤销）")
+            self.statusMessage.emit(
+                f"已删除 {len(ids)} 个对象（可 Ctrl+Z 撤销）"
+                + (f"；跳过 {skipped} 个锁定图层对象" if skipped else ""))
 
     def undo(self) -> None:
         label = self.undo_stack.undo()
@@ -635,24 +651,57 @@ class CadCanvas(QWidget):
                 self._apply_transform(m)
                 self.points.clear()
                 self.set_mode("select")
+        elif m == "mirror":
+            self.points.append(q)
+            if len(self.points) == 2:
+                keep = QMessageBox.question(
+                    self, "镜像", "是否保留原对象？\n"
+                    "「是」= 复制后再镜像；「否」= 只保留镜像结果。",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes
+                self._apply_transform("mirror", keep)
+                self.points.clear()
+                self.set_mode("select")
+        elif m == "scale":
+            self.points.append(q)
+            factor, ok = QInputDialog.getDouble(
+                self, "缩放", "比例（> 0，例如 2 或 0.5）：", 2.0,
+                0.0001, 10000.0, 4)
+            if ok:
+                self._apply_transform("scale", factor)
+            self.points.clear()
+            self.set_mode("select")
         else:
             self.points.clear()
         self.update()
 
-    def _apply_transform(self, mode: str) -> None:
-        ids = self.doc.selected_ids()
+    def _apply_transform(self, mode: str, param=None) -> None:
+        selected = [e for e in self.doc.entities if e.selected]
+        ids = {e.eid for e in selected if self.doc.editable(e)}
+        skipped = len(selected) - len(ids)
         if not ids:
-            self.statusMessage.emit("请先选中要操作的对象")
+            self.statusMessage.emit("请先选中未锁定图层上的对象")
             return
         pts = self.points
         if mode in ("move", "copy"):
             dx, dy = pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]
-        else:
+        elif mode == "rotate":
             ang = g.angle_deg(pts[0], pts[2]) - g.angle_deg(pts[0], pts[1])
+        elif mode == "mirror":
+            if g.dist(pts[0], pts[1]) < g.EPS:
+                self.statusMessage.emit("镜像轴两点重合，已取消")
+                return
+        elif mode == "scale":
+            if float(param) <= 0:
+                self.statusMessage.emit("缩放比例必须大于 0")
+                return
+        label = {"move": "移动", "copy": "复制", "rotate": "旋转",
+                 "mirror": "镜像", "scale": "缩放"}.get(mode, mode)
 
         def do():
             targets = [e for e in self.doc.entities if e.eid in ids]
-            if mode == "copy":
+            keep_source = mode == "copy" or (mode == "mirror" and param is True)
+            if keep_source:
                 clones = []
                 for e in targets:
                     c = e.clone()
@@ -665,12 +714,18 @@ class CadCanvas(QWidget):
             for e in targets:
                 if mode in ("move", "copy"):
                     e.transform("translate", dx, dy)
-                else:
+                elif mode == "rotate":
                     e.transform("rotate", pts[0], ang)
+                elif mode == "mirror":
+                    e.transform("mirror", pts[0], pts[1])
+                elif mode == "scale":
+                    e.transform("scale", pts[0], float(param))
 
-        if self.undo_stack.perform(f"{mode} {len(ids)} 个对象", do):
+        if self.undo_stack.perform(f"{label} {len(ids)} 个对象", do):
             self.refresh()
-            self.statusMessage.emit(f"{mode} 完成（{len(ids)} 个对象）")
+            self.statusMessage.emit(
+                f"{label} 完成（{len(ids)} 个对象）"
+                + (f"；跳过 {skipped} 个锁定图层对象" if skipped else ""))
 
     def _emit_measure(self, result: dict) -> None:
         if result:

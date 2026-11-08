@@ -23,6 +23,7 @@ UI_CLASSES = {
     "about": "Ui_AboutDialog",
     "settings": "Ui_SettingsDialog",
     "batch_convert": "Ui_BatchConvertDialog",
+    "layer_manager": "Ui_LayerManagerDialog",
 }
 
 

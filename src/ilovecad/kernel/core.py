@@ -236,6 +236,7 @@ class LibreDwgKernel:
             doc.downgraded = report.downgraded
             report.skipped = parsed.get("skipped", {})
             report.notes = parsed.get("notes", [])
+            report.warnings.extend(parsed.get("warnings", []))
             report.layers = parsed.get("layers", 0)
             report.counts = {"entities": parsed.get("entities", 0),
                              "by_kind": parsed.get("by_kind", {})}
@@ -258,7 +259,8 @@ class LibreDwgKernel:
         try:
             dxf = work / "model.dxf"
             out = work / "out.dwg"
-            dxf.write_bytes(write_dxf(doc))
+            stats: dict = {}
+            dxf.write_bytes(write_dxf(doc, stats))
             report.steps.append("文档模型序列化为 AC1018 ASCII DXF（UTF-8 / \\U+ 转义）")
             self._run("dwgwrite", ["--as", TARGET_VERSION_FLAG, "-I", "DXF",
                                   "-o", str(out), "-y", str(dxf)])
@@ -272,10 +274,33 @@ class LibreDwgKernel:
             verify = work / "verify.dxf"
             self._read_to_dxf(out, verify)
             vdoc, _ = parse_dxf(verify.read_bytes())
-            report.steps.append(f"回读校验通过，可解析 {len(vdoc.entities)} 个 2D 实体")
+            expected = int(stats.get("written", len(doc.entities)))
+            # A round-trip that merely "parses something" is not a validation:
+            # LibreDWG used to silently drop entities with a broken skeleton.
+            if len(vdoc.entities) != expected:
+                raise KernelError(
+                    f"回读校验失败：应写出 {expected} 个 2D 实体，"
+                    f"实际回读 {len(vdoc.entities)} 个。已拒绝落盘，原文件保持不变。")
+            report.steps.append(f"回读校验通过：{expected} / {expected} 个 2D 实体")
+            if stats.get("converted"):
+                report.notes.append("以下对象按 2D 近似类型写出（几何可能失真）：" +
+                                    "、".join(f"{k} × {n}" for k, n in
+                                             sorted(stats["converted"].items())))
+            if stats.get("point_fallback"):
+                report.notes.append(
+                    f"{stats['point_fallback']} 个退化填充边界已按 POINT 保留位置")
+            if stats.get("dropped"):
+                report.notes.append(
+                    f"{stats['dropped']} 个无有效顶点的空对象未写出（已在回读校验中计入）")
+            if stats.get("skipped"):
+                detail = "、".join(f"{k} × {v}" for k, v in
+                                  sorted(stats["skipped"].items()))
+                raise KernelError(
+                    f"保存被拒绝：存在无法写入 R2004 的实体类型（{detail}）。"
+                    "为避免静默丢失几何，已放弃落盘，原文件保持不变。")
             os.replace(out, dest)
             report.steps.append("原子替换目标文件，写入完成")
-            report.counts = {"entities": len(doc.entities)}
+            report.counts = {"entities": len(doc.entities), "written": expected}
         finally:
             shutil.rmtree(work, ignore_errors=True)
         return report

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import csv
+from collections import Counter
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog,
                                QInputDialog, QLabel, QListWidgetItem, QMainWindow,
                                QMenu, QMessageBox, QSizePolicy, QTreeWidgetItem)
@@ -14,15 +15,20 @@ from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDia
 from .. import APP_NAME, APP_VERSION
 from ..kernel.core import ImportReport, KernelError, LibreDwgKernel
 from ..model import geometry as g
+from ..model import layer_ops
 from ..model.document import DwgDocument
-from ..preferences import save_snap_config
+from ..preferences import (DEFAULT_PRECISION, DEFAULT_UNITS, UNITS_CHOICES,
+                           load_units_precision, save_snap_config,
+                           save_units_precision, sanitize_units_precision)
 from ..render.displaylist import build
 from ..render.pdf import PdfOptions, PdfRenderer
 from ..theme import apply_theme, is_dark, label as theme_label, load_theme, save_theme
+from ..tools import properties
 from ..tools.measure import format_line
 from ..tools.snapping import SnapConfig
-from ..version import TARGET_VERSION_LABEL
+from ..version import TARGET_VERSION, TARGET_VERSION_LABEL
 from .batch_convert import BatchConvertDialog
+from .layer_manager import LayerManagerDialog
 from .loader import load_ui
 
 DWG_FILTER = "DWG / DXF 图纸 (*.dwg *.dxf);;所有文件 (*)"
@@ -87,10 +93,11 @@ class ImportReportDialog(QDialog):
 
 
 class SettingsDialog(QDialog):
-    """Local-only settings: appearance theme + typed object snapping."""
+    """Local-only settings: theme, typed object snapping, units / precision."""
 
     def __init__(self, current_theme: str, snap_config: SnapConfig | None = None,
-                 parent=None):
+                 parent=None, *, units: int = DEFAULT_UNITS,
+                 precision: int = DEFAULT_PRECISION):
         super().__init__(parent)
         self.ui = load_ui(self, "settings")
         _localize_button_box(self.ui.buttonBox)
@@ -101,8 +108,19 @@ class SettingsDialog(QDialog):
             lambda: self._load_snap(SnapConfig()))
         self.ui.checkSnapEnabled.toggled.connect(self._sync_snap_controls)
         self._sync_snap_controls()
+        for code, text in UNITS_CHOICES:
+            self.ui.comboUnits.addItem(text, code)
+        self._load_units(units, precision)
+        self.ui.btnUnitsDefaults.clicked.connect(
+            lambda: self._load_units(DEFAULT_UNITS, DEFAULT_PRECISION))
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
+
+    def _load_units(self, units: int, precision: int) -> None:
+        code, places = sanitize_units_precision(units, precision)
+        index = self.ui.comboUnits.findData(code)
+        self.ui.comboUnits.setCurrentIndex(max(0, index))
+        self.ui.spinPrecision.setValue(places)
 
     def _load_snap(self, cfg: SnapConfig) -> None:
         self.ui.checkSnapEnabled.setChecked(cfg.enabled)
@@ -120,6 +138,9 @@ class SettingsDialog(QDialog):
     def show_snap_page(self) -> None:
         self.ui.tabSettings.setCurrentWidget(self.ui.tabSnapping)
 
+    def show_units_page(self) -> None:
+        self.ui.tabSettings.setCurrentWidget(self.ui.tabUnits)
+
     def theme(self) -> str:
         return "light" if self.ui.radioLight.isChecked() else "dark"
 
@@ -129,6 +150,10 @@ class SettingsDialog(QDialog):
             radius_px=float(self.ui.spinSnapRadius.value()),
             modes={kind: getattr(self.ui, name).isChecked()
                    for kind, name in SNAP_CHECKBOXES.items()})
+
+    def units_precision(self) -> tuple[int, int]:
+        code = self.ui.comboUnits.currentData()
+        return sanitize_units_precision(code, self.ui.spinPrecision.value())
 
 
 # Older callers (and the command alias) still use the original name.
@@ -157,6 +182,8 @@ class MainWindow(QMainWindow):
         self._loading_layers = False
         self._persist_snapping = True   # selftests can disable local writes
         self._snap_kind = ""
+        self.units, self.precision = load_units_precision()
+        self.doc.units, self.doc.precision = self.units, self.precision
 
         self.canvas = self.ui.canvas
         self.canvas.set_document(self.doc)
@@ -173,7 +200,24 @@ class MainWindow(QMainWindow):
         self._update_title()
         self.ui.commandHint.setText(
             "就绪。打开图纸开始看图；滚轮缩放，中键或空格拖动平移，F3 捕捉，F8 正交。")
+        self._refresh_units_label()
         self._status("纯净版 · 无广告 · 无会员 · 无订阅 · 2D Only")
+
+    def _refresh_units_label(self) -> None:
+        self.lblUnits.setText(f"{g.UNIT_LABELS.get(self.units, '单位')} · "
+                              f"{self.precision} 位")
+
+    def set_units_precision(self, units: int, precision: int,
+                            persist: bool = True) -> tuple[int, int]:
+        u, p = sanitize_units_precision(units, precision)
+        self.units, self.precision = u, p
+        self.doc.units, self.doc.precision = u, p
+        if persist:
+            save_units_precision(u, p)
+        self._refresh_units_label()
+        self._status(f"单位：{g.UNIT_LABELS.get(u, '单位')}，显示精度 {p} 位"
+                     "（已写入 $INSUNITS，几何坐标不变）")
+        return u, p
 
     # ------------------------------------------------------------------ setup
     def _build_status_bar(self):
@@ -183,14 +227,15 @@ class MainWindow(QMainWindow):
         self.lblOrtho = QLabel("正交 关")
         self.lblGrid = QLabel("栅格 开")
         self.lblLW = QLabel("线宽 开")
+        self.lblUnits = QLabel("")
         self.lblVersion = QLabel(TARGET_VERSION_LABEL)
         self.lbl2D = QLabel("2D ONLY")
         self.lblMessage = QLabel("")
         for w in (self.lblCoord, self.lblScale, self.lblSnap, self.lblOrtho,
-                  self.lblGrid, self.lblLW, self.lblMessage):
+                  self.lblGrid, self.lblLW, self.lblUnits, self.lblMessage):
             w.setStyleSheet("QLabel { padding: 0 9px; }")
         for w in (self.lblCoord, self.lblScale, self.lblSnap, self.lblOrtho,
-                  self.lblGrid, self.lblLW):
+                  self.lblGrid, self.lblLW, self.lblUnits):
             self.ui.statusbar.addWidget(w)
         self.lblMessage.setSizePolicy(QSizePolicy.Policy.Expanding,
                                       QSizePolicy.Policy.Preferred)
@@ -218,7 +263,7 @@ class MainWindow(QMainWindow):
             "btnOpen": self.open_file_dialog, "btnSave": self.save,
             "btnSaveAs": self.save_as, "btnImportReport": self.show_report,
             "btnAbout": self.show_about,
-            "btnFit": c.fit_view, "btnZoomIn": c.zoom_in,
+            "btnFit": lambda: c.fit_view(), "btnZoomIn": c.zoom_in,
             "btnZoomOut": c.zoom_out,
             "btnZoomWindow": lambda: c.set_mode("zoom_window"),
             "btnPan": lambda: c.set_mode("pan"),
@@ -235,6 +280,8 @@ class MainWindow(QMainWindow):
             "btnMove": lambda: self._need_selection("move"),
             "btnCopy": lambda: self._need_selection("copy"),
             "btnRotate": lambda: self._need_selection("rotate"),
+            "btnMirror": lambda: self._need_selection("mirror"),
+            "btnScale": lambda: self._need_selection("scale"),
             "btnDelete": lambda: c.set_mode("delete"),
             "btnMeasureDistance": lambda: c.set_mode("distance"),
             "btnMeasureChain": lambda: c.set_mode("chain"),
@@ -247,6 +294,7 @@ class MainWindow(QMainWindow):
             "btnBatchConvert": self.open_batch_convert,
             "btnLayerAllOn": self._layers_all_on,
             "btnLayerInvert": self._layers_invert,
+            "btnLayerManager": self.open_layer_manager,
         }
         for name, slot in tool_map.items():
             widget = getattr(u, name, None)
@@ -258,7 +306,7 @@ class MainWindow(QMainWindow):
             "actSaveAs": self.save_as, "actExportPdf": self.export_pdf,
             "actExportDxf": self.export_dxf,
             "actBatchConvert": self.open_batch_convert, "actQuit": self.close,
-            "actFit": c.fit_view, "actZoomIn": c.zoom_in,
+            "actFit": lambda: c.fit_view(), "actZoomIn": c.zoom_in,
             "actZoomOut": c.zoom_out, "actUndo": c.undo, "actRedo": c.redo,
             "actDelete": lambda: c.set_mode("delete"),
             "actMeasureDistance": lambda: c.set_mode("distance"),
@@ -267,6 +315,10 @@ class MainWindow(QMainWindow):
             "actMeasureAngleLines": lambda: c.set_mode("angle_lines"),
             "actThemeSettings": self._open_theme_settings,
             "actSnapSettings": self._open_snap_settings,
+            "actUnitsSettings": self._open_units_settings,
+            "actLayerManager": self.open_layer_manager,
+            "actMirror": lambda: self._need_selection("mirror"),
+            "actScale": lambda: self._need_selection("scale"),
             "actCommandHelp": self._show_command_help,
             "actAbout": self.show_about,
         }
@@ -276,6 +328,8 @@ class MainWindow(QMainWindow):
                 action.triggered.connect(slot)
 
         u.layerTree.itemChanged.connect(self._on_layer_changed)
+        u.layerTree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        u.layerTree.customContextMenuRequested.connect(self._layer_context_menu)
         u.layerSearch.textChanged.connect(self._filter_layers)
         u.propTree.itemDoubleClicked.connect(self._on_property_double_clicked)
         u.commandInput.returnPressed.connect(self._on_command)
@@ -302,10 +356,20 @@ class MainWindow(QMainWindow):
         except KernelError as exc:
             QMessageBox.critical(self, "打开失败", str(exc))
             return
+        except Exception as exc:  # malformed DXF must never crash the viewer
+            QMessageBox.critical(
+                self, "打开失败",
+                f"文件解析时发生异常（{type(exc).__name__}：{exc}）。"
+                "原文件未被改写，请检查图纸是否损坏。")
+            return
         self.doc = doc
+        # doc.units drives measurement / PDF display; source_units keeps the
+        # drawing's own $INSUNITS so saving never silently relabels it.
+        doc.units, doc.precision = self.units, self.precision
         self.current_path = path
         self.canvas.set_document(doc)
         self._populate_layers()
+        self._refresh_units_label()
         self.ui.reportBrowser.setPlainText(self.report.to_text())
         self.ui.measureList.clear()
         self._update_title()
@@ -316,8 +380,13 @@ class MainWindow(QMainWindow):
 
     def show_report_if_needed(self):
         # 报告已写入右侧「导入报告」面板；不自动弹模态窗口打断看图。
-        if self.report.skipped or self.report.downgraded or self.report.warnings:
-            self._status("导入存在跳过对象 / 源头降版本 / 警告，请点击「导入报告」查看明细")
+        _, ignored = self.doc.robust_bounds()
+        if self.report.skipped or self.report.downgraded or \
+                self.report.warnings or ignored:
+            self._status(
+                "导入存在跳过对象 / 源头降版本 / 警告，请点击「导入报告」查看明细"
+                + (f"｜全图视图已忽略 {ignored} 个离群对象，FITALL 查看完整范围"
+                   if ignored else ""))
 
     def show_report(self):
         ImportReportDialog(self.report.to_text(), self).exec()
@@ -325,29 +394,78 @@ class MainWindow(QMainWindow):
     def show_about(self):
         AboutDialog(self).exec()
 
-    def _confirm_data_loss(self) -> bool:
-        n = sum(self.doc.skipped.values()) if self.doc.skipped else 0
-        if not n and not self.doc.notes:
+    # ------------------------------------------------------------ save safety
+    APPROXIMATED = ("SPLINE", "HATCH", "MTEXT", "DIMENSION", "INSERT")
+
+    def _source_protect_reason(self) -> str:
+        """Why overwriting the currently opened file is not allowed."""
+        if self.current_path is None:
+            return ""
+        if self.current_path.suffix.lower() != ".dwg":
+            return ("当前打开的是 DXF 文件，直接保存会把 DWG 二进制写入 .dxf "
+                    "路径并破坏原文件")
+        if self.doc.downgraded:
+            return (f"源文件为高版本 {self.doc.source_version or 'DWG'}，"
+                    "读入时已在临时副本上降版本；覆盖原图会造成不可逆的版本与数据降级")
+        version = (self.doc.source_version or "").upper()
+        if version and version != TARGET_VERSION:
+            return (f"源文件版本 {version} 不是 {TARGET_VERSION}，"
+                    "覆盖原图会改变其版本与内容")
+        return ""
+
+    def _save_risk_lines(self) -> list[str]:
+        doc = self.doc
+        lines: list[str] = []
+        if doc.skipped:
+            lines.append("导入时明确跳过的对象（不会写入）：" + "、".join(
+                f"{k} × {v}" for k, v in sorted(doc.skipped.items())[:12]))
+        counts = Counter(e.kind for e in doc.entities)
+        approx = [(k, counts[k]) for k in self.APPROXIMATED if counts.get(k)]
+        if approx:
+            lines.append("按 2D 近似类型写出、几何可能失真：" + "、".join(
+                f"{k} × {v}" for k, v in approx))
+            if counts.get("SPLINE"):
+                lines.append("SPLINE 曲线保存为控制点折线，曲线形状会改变")
+        if doc.source_units == 0:
+            lines.append("源图纸 $INSUNITS=0（无单位）：写入时保留该标记，"
+                         "测量数值仅按本机显示单位解释")
+        if doc.notes:
+            lines.append("导入降级说明：" + "；".join(doc.notes[:3]))
+        return lines
+
+    def _confirm_data_loss(self, target: Path | None = None,
+                           overwrite: bool = False) -> bool:
+        risks = self._save_risk_lines()
+        if not risks:
             return True
-        details = "\n".join(f"  · {k} × {v}" for k, v in
-                            list(self.doc.skipped.items())[:12])
+        where = (f"将覆盖当前文件：{target}"
+                 if overwrite and target else
+                 f"将写入：{target}" if target else "将写入目标文件")
+        detail = "\n".join(f"  · {line}" for line in risks)
         return QMessageBox.question(
             self, "保存前确认",
-            f"本次经 DXF 中转，有 {n} 个不支持 / 3D 对象不会写入 R2004 文件"
-            "（3D 支持按设计跳过）：\n" + details +
-            "\n\n原文件中这些对象不会被静默改写；保存的是当前 2D 文档模型。"
-            "\n确认继续保存吗？",
+            f"{where}\n\n本次写出为 R2004 / AC1018。经 DXF 中转会发生以下变化，"
+            "原文件无法自动恢复（建议优先使用「另存为」保留原件）：\n"
+            + detail + "\n\n确认继续吗？",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes
 
     def save(self):
         if self.current_path is None:
             self.save_as()
             return
-        if not self._confirm_data_loss():
+        reason = self._source_protect_reason()
+        if reason:
+            QMessageBox.information(
+                self, "原文件保护",
+                reason + "。\n\n为保证原图不被改写，请使用「另存为」输出新的 "
+                "R2004 / AC1018 文件。")
+            self.save_as()
+            return
+        if not self._confirm_data_loss(self.current_path, overwrite=True):
             return
         try:
             report = self.kernel.write(self.doc, self.current_path)
-        except KernelError as exc:
+        except (KernelError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
         self.ui.reportBrowser.setPlainText(report.to_text())
@@ -361,11 +479,16 @@ class MainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.lower() != ".dwg":
             target = target.with_suffix(".dwg")
-        if not self._confirm_data_loss():
+        if self.current_path is not None and \
+                target.resolve() == self.current_path.resolve():
+            QMessageBox.warning(self, "目标无效",
+                                "不能覆盖当前打开的源文件，请换一个文件名或目录。")
+            return
+        if not self._confirm_data_loss(target, overwrite=target.exists()):
             return
         try:
             report = self.kernel.write(self.doc, target)
-        except KernelError as exc:
+        except (KernelError, OSError, ValueError) as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
             return
         self.current_path = target
@@ -410,7 +533,11 @@ class MainWindow(QMainWindow):
         target = Path(path)
         if target.suffix.lower() != ".dxf":
             target = target.with_suffix(".dxf")
-        self.kernel.export_dxf(self.doc, target)
+        try:
+            self.kernel.export_dxf(self.doc, target)
+        except (KernelError, OSError, ValueError) as exc:
+            QMessageBox.critical(self, "DXF 导出失败", str(exc))
+            return
         self._status(f"已导出 AC1018 DXF：{target.name}")
 
     def open_batch_convert(self):
@@ -423,12 +550,18 @@ class MainWindow(QMainWindow):
         self._loading_layers = True
         tree = self.ui.layerTree
         tree.clear()
+        current = self.canvas.current_layer
         for name, layer in sorted(self.doc.layers.items(), key=lambda kv: kv[0]):
-            item = QTreeWidgetItem(["", name, f"ACI {layer.color}"])
+            tag = " [锁定]" if layer.locked else ""
+            item = QTreeWidgetItem(["", name, f"ACI {layer.color}{tag}"])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(0, Qt.CheckState.Checked if layer.visible
                                and not layer.frozen else Qt.CheckState.Unchecked)
             item.setForeground(1, QColor(*self._layer_color(layer.color)))
+            if name == current:
+                font = QFont()
+                font.setBold(True)
+                item.setFont(1, font)
             tree.addTopLevelItem(item)
         tree.resizeColumnToContents(1)
         self._loading_layers = False
@@ -442,13 +575,13 @@ class MainWindow(QMainWindow):
         if self._loading_layers or column != 0:
             return
         name = item.text(1)
-        layer = self.doc.layers.get(name)
-        if layer:
-            on = item.checkState(0) == Qt.CheckState.Checked
-            layer.visible = on
-            layer.frozen = not on
-            self.canvas.invalidate()
-            self._status(f"图层 {name}：{'显示' if on else '隐藏'}")
+        on = item.checkState(0) == Qt.CheckState.Checked
+        self.canvas.undo_stack.perform(
+            f"图层 {name} 显示状态",
+            lambda: layer_ops.set_flags(self.doc, name, visible=on,
+                                        frozen=False if on else None))
+        self.canvas.invalidate()
+        self._status(f"图层 {name}：{'显示' if on else '隐藏'}")
 
     def _filter_layers(self, text: str):
         t = text.strip().lower()
@@ -457,66 +590,114 @@ class MainWindow(QMainWindow):
             item.setHidden(bool(t) and t not in item.text(1).lower())
 
     def _layers_all_on(self):
-        for layer in self.doc.layers.values():
-            layer.visible, layer.frozen = True, False
+        self.canvas.undo_stack.perform("全部图层显示",
+                                       lambda: layer_ops.all_on(self.doc))
         self._populate_layers()
         self.canvas.invalidate()
 
     def _layers_invert(self):
-        for layer in self.doc.layers.values():
-            layer.visible = not layer.visible
-            layer.frozen = not layer.visible
+        self.canvas.undo_stack.perform("反转图层显示",
+                                       lambda: layer_ops.invert(self.doc))
         self._populate_layers()
         self.canvas.invalidate()
+
+    def _set_current_layer(self, name: str) -> None:
+        if name in self.doc.layers:
+            self.canvas.current_layer = name
+            self._populate_layers()
+            self._status(f"当前绘制图层：{name}")
+
+    def _toggle_layer_lock(self, name: str) -> None:
+        layer = self.doc.layers.get(name)
+        if layer is None:
+            return
+        new = not layer.locked
+        self.canvas.undo_stack.perform(
+            f"图层 {name} 锁定状态",
+            lambda: layer_ops.set_flags(self.doc, name, locked=new))
+        self._populate_layers()
+        self._status(f"图层 {name}：{'已锁定（可见但不可编辑）' if new else '已解锁'}")
+
+    def _layer_context_menu(self, pos):
+        tree = self.ui.layerTree
+        item = tree.itemAt(pos)
+        menu = QMenu(self)
+        menu.addAction("图层管理…", self.open_layer_manager)
+        if item:
+            name = item.text(1)
+            menu.addSeparator()
+            menu.addAction(f"设为当前图层：{name}",
+                           lambda: self._set_current_layer(name))
+            menu.addAction("锁定 / 解锁此图层",
+                           lambda: self._toggle_layer_lock(name))
+            menu.addAction("全部显示", self._layers_all_on)
+        menu.exec(tree.viewport().mapToGlobal(pos))
+
+    def open_layer_manager(self):
+        dlg = LayerManagerDialog(self.doc, self.canvas.current_layer,
+                                 self.canvas.undo_stack, self)
+        dlg.exec()
+        changed = dlg.changed
+        self.canvas.current_layer = dlg.current_layer()
+        if self.canvas.current_layer not in self.doc.layers:
+            self.canvas.current_layer = "0"
+        self._populate_layers()
+        self.canvas.invalidate()
+        self._status(f"图层管理：当前 {self.canvas.current_layer}，"
+                     f"共 {len(self.doc.layers)} 个图层"
+                     + (f"；{changed} 项改动可用 Ctrl+Z 撤销" if changed else ""))
+        return changed
 
     # -------------------------------------------------------------- properties
     def _on_selection(self, count: int):
         tree = self.ui.propTree
         tree.clear()
-        if count == 0:
-            tree.addTopLevelItem(QTreeWidgetItem(["提示", "未选中对象"]))
-            return
-        selected = [e for e in self.doc.entities if e.selected]
-        first = selected[0]
-        rows = [("选中数量", str(count)), ("类型", first.kind),
-                ("图层", first.layer), ("颜色",
-                                      "ByLayer" if first.color in (0, 256) else str(first.color)),
-                ("线型", first.linetype), ("线宽", f"{first.lineweight:.2f} mm")]
-        b = first.bounds()
-        if b:
-            rows += [("范围 X", f"{b[0]:.3f} ~ {b[2]:.3f}"),
-                     ("范围 Y", f"{b[1]:.3f} ~ {b[3]:.3f}")]
-        for k, v in rows:
-            tree.addTopLevelItem(QTreeWidgetItem([k, v]))
-        self._status(f"选中 {count} 个对象")
+        for row in properties.rows(self.doc, self.doc.entities):
+            item = QTreeWidgetItem([row.label, row.value])
+            if row.key and row.editable:
+                item.setData(0, Qt.ItemDataRole.UserRole, row.key)
+                item.setToolTip(1, "双击编辑；锁定图层上的对象不会被修改")
+            tree.addTopLevelItem(item)
+        if count:
+            self._status(f"选中 {count} 个对象｜双击属性值可编辑")
 
     def _on_property_double_clicked(self, item, column):
         if column != 1 or not self.doc.selected_ids():
             return
-        key = item.text(0)
-        ids = self.doc.selected_ids()
-        if key == "图层":
-            names = sorted(self.doc.layers)
-            name, ok = QInputDialog.getItem(self, "修改图层", "选择图层：", names)
-            if ok and name:
-                def do():
-                    for e in self.doc.entities:
-                        if e.eid in ids:
-                            e.layer = name
-                self.canvas.undo_stack.perform(f"修改图层为 {name}", do)
-                self.canvas.refresh()
-                self._on_selection(len(ids))
-        elif key == "颜色":
-            value, ok = QInputDialog.getInt(self, "修改颜色", "ACI 颜色号 (1-255, 256=ByLayer)：",
-                                            256, 1, 256)
-            if ok:
-                def do():
-                    for e in self.doc.entities:
-                        if e.eid in ids:
-                            e.color = value
-                self.canvas.undo_stack.perform("修改颜色", do)
-                self.canvas.refresh()
-                self._on_selection(len(ids))
+        key = item.data(0, Qt.ItemDataRole.UserRole)
+        if not key:
+            return
+        selected = [e for e in self.doc.entities if e.selected]
+        label = item.text(0)
+        current = item.text(1)
+        choices = properties.choices_for(self.doc, key)
+        if choices:
+            index = choices.index(current) if current in choices else 0
+            value, ok = QInputDialog.getItem(
+                self, "修改属性", f"{label}：", choices, index, False)
+        else:
+            default = "" if current in (properties.MULTIPLE, "ByLayer") else current
+            value, ok = QInputDialog.getText(
+                self, "修改属性", f"{label}：\n坐标请写成 X,Y（例如 12.5,40）",
+                text=default)
+        if not ok:
+            return
+        edited = 0
+        locked = properties.locked_count(self.doc, selected)
+
+        def do():
+            nonlocal edited
+            edited = properties.apply_value(self.doc, selected, key, value)
+
+        try:
+            self.canvas.undo_stack.perform(f"修改 {label}", do)
+        except ValueError as exc:
+            QMessageBox.warning(self, "属性修改失败", str(exc))
+            return
+        self.canvas.refresh()
+        self._on_selection(len(self.doc.selected_ids()))
+        self._status(f"已修改 {label}：{edited} 个对象"
+                     + (f"；跳过 {locked} 个锁定图层对象" if locked else ""))
 
     # ------------------------------------------------------------ measurements
     def _on_measurement(self, m: dict):
@@ -629,13 +810,18 @@ class MainWindow(QMainWindow):
             "IloveCAD 命令与快捷键（在底部命令栏输入即可）\n"
             "========================================\n"
             "文件：OPEN / SAVE / DXF / PDF　（Ctrl+O / Ctrl+S / Ctrl+P / Ctrl+Shift+S）\n"
-            "视图：Z 或 FIT 适应全图、P 平移、F7 栅格、F8 正交、GRID / ORTHO\n"
+            "视图：Z 或 FIT 适应全图、FITALL / ZEXTENTS 完整范围（含离群对象）、\n"
+            "      P 平移、F7 栅格、F8 正交、GRID / ORTHO\n"
             "捕捉：F3 或 SNAP 开关；OSNAP / SNAPSET 打开捕捉设置；\n"
             "       端点 / 顶点、中点、中心 / 圆心、象限点、交点、垂足、最近点可单独开关\n"
             "绘制：L / LINE、PL、REC、C / CIRCLE、A、T / TEXT\n"
-            "编辑：E / DELETE、M / MOVE、CO / COPY、RO / ROTATE、UNDO / Ctrl+Z、REDO / Ctrl+Y\n"
+            "编辑：E / DELETE、M / MOVE、CO / COPY、RO / ROTATE、MI / MIRROR、SC / SCALE、\n"
+            "      UNDO / Ctrl+Z、REDO / Ctrl+Y；属性面板双击可改图层 / 颜色 / 线型 / 线宽 /\n"
+            "      坐标 / 半径 / 文字内容，支持多选批量修改\n"
+            "图层：LA / LAYER 打开图层管理（新建 / 重命名 / 删除 / 锁定 / 颜色线型线宽）；\n"
+            "      锁定图层仍可见可捕捉，但不能被选中编辑\n"
             "测量：DI / DIST、CHAIN、AREA、R、ANG / DAN（三点夹角）、AL / ANGLELINE（两线夹角）\n"
-            "设置：THEME / SETTINGS / OP 打开主题与对象捕捉设置\n"
+            "设置：THEME / SETTINGS / OP 主题与对象捕捉；OSNAP 捕捉页；UNITS 单位与精度页\n"
             "帮助：HELP / ? 显示本说明\n"
             "\n测量结果列表：单击高亮，双击定位，右键可删除单条 / 复制数值 / 导出 CSV。\n"
             "鼠标：滚轮缩放，中键或「平移」模式左键拖动平移，Esc 取消当前命令。\n")
@@ -654,6 +840,7 @@ class MainWindow(QMainWindow):
             "C": "draw_circle", "CIRCLE": "draw_circle", "A": "draw_arc",
             "T": "draw_text", "TEXT": "draw_text", "E": "delete",
             "M": "move", "CO": "copy", "RO": "rotate",
+            "MI": "mirror", "MIRROR": "mirror", "SC": "scale", "SCALE": "scale",
             "AREA": "area", "CHAIN": "chain", "R": "radius",
             "ANG": "angle", "ANGLE": "angle", "DAN": "angle",
             "AL": "angle_lines", "ANGLELINE": "angle_lines",
@@ -661,7 +848,13 @@ class MainWindow(QMainWindow):
         }
         if cmd in ("Z", "FIT"):
             self.canvas.fit_view()
-            self._status("已适应全图")
+            _, ignored = self.doc.robust_bounds()
+            self._status("已适应全图" + (f"（忽略 {ignored} 个离群对象，"
+                                     "FITALL 可查看完整范围）" if ignored else ""))
+            return
+        if cmd in ("FITALL", "ZEXTENTS", "EXTENTS"):
+            self.canvas.fit_view(full=True)
+            self._status("已按完整范围显示（包含离群对象）")
             return
         if cmd == "PDF":
             self.export_pdf()
@@ -671,6 +864,12 @@ class MainWindow(QMainWindow):
             return
         if cmd in ("OSNAP", "SNAPSET", "SNAPSETTINGS"):
             self._open_settings(snap_page=True)
+            return
+        if cmd in ("UNITS", "DDUNITS", "UN"):
+            self._open_units_settings()
+            return
+        if cmd in ("LA", "LAYER", "LAYERS", "LM"):
+            self.open_layer_manager()
             return
         if cmd in ("HELP", "?", "？"):
             self._show_command_help()
@@ -701,7 +900,7 @@ class MainWindow(QMainWindow):
             return
         if cmd in table:
             mode = table[cmd]
-            if mode in ("move", "copy", "rotate"):
+            if mode in ("move", "copy", "rotate", "mirror", "scale"):
                 self._need_selection(mode)
             else:
                 self.canvas.set_mode(mode)
@@ -744,25 +943,36 @@ class MainWindow(QMainWindow):
         self._refresh_snap_label()
 
     # --------------------------------------------------------------- settings
-    def _open_settings(self, snap_page: bool = False):
-        dlg = SettingsDialog(self.theme, self.canvas.snap_config, self)
+    def _open_settings(self, snap_page: bool = False,
+                       units_page: bool = False):
+        dlg = SettingsDialog(self.theme, self.canvas.snap_config, self,
+                             units=self.units, precision=self.precision)
         if snap_page:
             dlg.show_snap_page()
+        if units_page:
+            dlg.show_units_page()
         if dlg.exec() != QDialog.Accepted:
             return
         new_theme = dlg.theme()
         if new_theme != self.theme:
             self.set_theme(new_theme)
         self.canvas.set_snap_config(dlg.snap_config())
+        units, precision = dlg.units_precision()
+        if (units, precision) != (self.units, self.precision):
+            self.set_units_precision(units, precision)
         self._status(f"设置已保存：{theme_label(self.theme)}｜"
                      f"对象捕捉{'开' if self.canvas.snap_enabled else '关'}"
-                     f"｜半径 {self.canvas.snap_config.radius_px:g} px")
+                     f"｜半径 {self.canvas.snap_config.radius_px:g} px｜"
+                     f"{g.UNIT_LABELS.get(self.units, '单位')} · {self.precision} 位")
 
     def _open_theme_settings(self):
         self._open_settings()
 
     def _open_snap_settings(self):
         self._open_settings(snap_page=True)
+
+    def _open_units_settings(self):
+        self._open_settings(units_page=True)
 
     def _toggle_dark(self):
         dark = self.canvas.toggle_dark()

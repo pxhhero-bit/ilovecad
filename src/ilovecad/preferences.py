@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Local-only preference persistence for object snapping.
+"""Local-only preferences: object snapping and measurement units / precision.
 
 A plain INI file in the user scope: no account, no cloud sync, no telemetry,
 no network access.  A read-only home directory must never break the viewer.
@@ -13,6 +13,24 @@ from .tools.snapping import DEFAULT_MODES, SNAP_KINDS, SnapConfig
 _KEY_ENABLED = "snapping/enabled"
 _KEY_RADIUS = "snapping/radius_px"
 _KEY_MODE = "snapping/mode/"
+_KEY_UNITS = "measurement/units"
+_KEY_PRECISION = "measurement/precision"
+
+# $INSUNITS codes with a known millimetre conversion (see geometry.UNIT_MM).
+UNITS_CHOICES = (
+    (4, "毫米 (mm)"),
+    (5, "厘米 (cm)"),
+    (6, "米 (m)"),
+    (1, "英寸 (in)"),
+    (2, "英尺 (ft)"),
+    (10, "码 (yd)"),
+    (7, "千米 (km)"),
+    (13, "微米 (µm)"),
+    (14, "分米 (dm)"),
+    (0, "无单位"),
+)
+DEFAULT_UNITS = 4
+DEFAULT_PRECISION = 4
 
 
 def _settings() -> QSettings:
@@ -54,3 +72,39 @@ def save_snap_config(cfg: SnapConfig) -> SnapConfig:
     except Exception:
         pass
     return cfg
+
+
+def sanitize_units_precision(units, precision) -> tuple[int, int]:
+    try:
+        u = int(units)
+    except (TypeError, ValueError):
+        u = DEFAULT_UNITS
+    if u not in {code for code, _ in UNITS_CHOICES}:
+        u = DEFAULT_UNITS
+    try:
+        p = int(precision)
+    except (TypeError, ValueError):
+        p = DEFAULT_PRECISION
+    return u, max(0, min(8, p))
+
+
+def load_units_precision() -> tuple[int, int]:
+    try:
+        s = _settings()
+        return sanitize_units_precision(
+            s.value(_KEY_UNITS, DEFAULT_UNITS),
+            s.value(_KEY_PRECISION, DEFAULT_PRECISION))
+    except Exception:
+        return DEFAULT_UNITS, DEFAULT_PRECISION
+
+
+def save_units_precision(units: int, precision: int) -> tuple[int, int]:
+    u, p = sanitize_units_precision(units, precision)
+    try:
+        s = _settings()
+        s.setValue(_KEY_UNITS, u)
+        s.setValue(_KEY_PRECISION, p)
+        s.sync()
+    except Exception:
+        pass
+    return u, p

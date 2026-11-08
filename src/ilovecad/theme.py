@@ -54,10 +54,17 @@ QTreeWidget, QListWidget, QTextBrowser, QPlainTextEdit, QLineEdit {
     background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
     selection-background-color:%(sel)s; selection-color:%(selfg)s;
 }
-QComboBox, QSpinBox {
+QComboBox, QSpinBox, QDoubleSpinBox {
     background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
     border-radius:3px; padding:3px 8px;
 }
+QTableWidget, QTableView {
+    background:%(base)s; color:%(fg)s; border:1px solid %(border)s;
+    gridline-color:%(border)s; alternate-background-color:%(alt)s;
+    selection-background-color:%(sel)s; selection-color:%(selfg)s;
+}
+QTableWidget::item:selected { background:%(sel)s; color:%(selfg)s; }
+QTableCornerButton::section { background:%(btn)s; border:0; }
 QComboBox::drop-down {
     subcontrol-origin:padding; subcontrol-position:top right;
     width:18px; border:0; border-left:1px solid %(border)s;

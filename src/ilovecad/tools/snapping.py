@@ -168,10 +168,13 @@ def ortho_point(origin: Point, p: Point) -> Point:
     return (p[0], origin[1]) if abs(dx) >= abs(dy) else (origin[0], p[1])
 
 
-def nearest_entity(doc: DwgDocument, p: Point, tol: float):
+def nearest_entity(doc: DwgDocument, p: Point, tol: float,
+                   editable_only: bool = False):
     best, best_d = None, float("inf")
     for ent in doc.entities:
         if not doc.visible(ent) or not _near_bounds(ent.bounds(), p, tol * 2):
+            continue
+        if editable_only and not doc.editable(ent):
             continue
         for a, b in ent.segments():
             d = g.point_segment_distance(p, a, b)
@@ -180,13 +183,15 @@ def nearest_entity(doc: DwgDocument, p: Point, tol: float):
     return best if best_d <= tol else None
 
 
-def entities_in_rect(doc: DwgDocument, rect):
+def entities_in_rect(doc: DwgDocument, rect, editable_only: bool = False):
     x0, y0, x1, y1 = rect
     x0, x1 = sorted((x0, x1))
     y0, y1 = sorted((y0, y1))
     ids = set()
     for ent in doc.entities:
         if not doc.visible(ent):
+            continue
+        if editable_only and not doc.editable(ent):
             continue
         b = ent.bounds()
         if b and b[0] >= x0 and b[2] <= x1 and b[1] >= y0 and b[3] <= y1:

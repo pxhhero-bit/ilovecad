@@ -38,6 +38,27 @@ def scale_point(p: Point, origin: Point, sx: float, sy: float | None = None) -> 
     return (origin[0] + (p[0] - origin[0]) * sx, origin[1] + (p[1] - origin[1]) * sy)
 
 
+def mirror_point(p: Point, a: Point, b: Point) -> Point:
+    """Reflect a point about the infinite line through a and b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n2 = dx * dx + dy * dy
+    if n2 < EPS:
+        return (float(p[0]), float(p[1]))
+    t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / n2
+    foot = (a[0] + t * dx, a[1] + t * dy)
+    return (2 * foot[0] - p[0], 2 * foot[1] - p[1])
+
+
+def mirror_direction(v: Point, a: Point, b: Point) -> Point:
+    """Reflect a free vector (e.g. an ellipse major axis) about line a-b."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    n2 = dx * dx + dy * dy
+    if n2 < EPS:
+        return (float(v[0]), float(v[1]))
+    dot = (v[0] * dx + v[1] * dy) / n2
+    return (2 * dot * dx - v[0], 2 * dot * dy - v[1])
+
+
 def polyline_length(points: Sequence[Point], closed: bool = False) -> float:
     if len(points) < 2:
         return 0.0

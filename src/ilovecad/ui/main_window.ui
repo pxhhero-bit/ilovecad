@@ -68,6 +68,8 @@
         <item><widget class="QToolButton" name="btnCopy"><property name="text"><string>复制</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnRotate"><property name="text"><string>旋转</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnDelete"><property name="text"><string>删除</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMirror"><property name="text"><string>镜像</string></property><property name="toolTip"><string>先选中对象，再点取镜像轴两点</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnScale"><property name="text"><string>缩放</string></property><property name="toolTip"><string>先选中对象，再点取基点并输入比例</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerEdit"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
       </widget>
@@ -105,6 +107,7 @@
         <item><widget class="QLineEdit" name="layerSearch"><property name="placeholderText"><string>搜索图层…</string></property></widget></item>
         <item><widget class="QTreeWidget" name="layerTree"><column><property name="text"><string>显示</string></property></column><column><property name="text"><string>图层名</string></property></column><column><property name="text"><string>颜色</string></property></column></widget></item>
         <item><layout class="QHBoxLayout" name="layerButtons"><item><widget class="QPushButton" name="btnLayerAllOn"><property name="text"><string>全部显示</string></property></widget></item><item><widget class="QPushButton" name="btnLayerInvert"><property name="text"><string>反选</string></property></widget></item></layout></item>
+        <item><layout class="QHBoxLayout" name="layerButtons2"><item><widget class="QPushButton" name="btnLayerManager"><property name="text"><string>图层管理…</string></property><property name="toolTip"><string>新建 / 重命名 / 删除 / 锁定图层，编辑颜色线型线宽</string></property></widget></item></layout></item>
        </layout>
       </widget>
       <widget class="CadCanvas" name="canvas">
@@ -142,8 +145,8 @@
    <property name="geometry"><rect><x>0</x><y>0</y><width>1440</width><height>26</height></rect></property>
    <widget class="QMenu" name="menuFile"><property name="title"><string>文件(&amp;F)</string></property><addaction name="actOpen"/><addaction name="actSave"/><addaction name="actSaveAs"/><addaction name="separator"/><addaction name="actExportPdf"/><addaction name="actExportDxf"/><addaction name="actBatchConvert"/><addaction name="separator"/><addaction name="actQuit"/></widget>
    <widget class="QMenu" name="menuView"><property name="title"><string>视图(&amp;V)</string></property><addaction name="actFit"/><addaction name="actZoomIn"/><addaction name="actZoomOut"/><addaction name="separator"/><addaction name="actThemeSettings"/><addaction name="actSnapSettings"/></widget>
-   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/></widget>
-   <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/><addaction name="actMeasureAngle"/><addaction name="actMeasureAngleLines"/></widget>
+   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/><addaction name="separator"/><addaction name="actMirror"/><addaction name="actScale"/><addaction name="separator"/><addaction name="actLayerManager"/></widget>
+   <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/><addaction name="actMeasureAngle"/><addaction name="actMeasureAngleLines"/><addaction name="separator"/><addaction name="actUnitsSettings"/></widget>
    <widget class="QMenu" name="menuHelp"><property name="title"><string>帮助(&amp;H)</string></property><addaction name="actCommandHelp"/><addaction name="separator"/><addaction name="actAbout"/></widget>
    <addaction name="menuFile"/><addaction name="menuView"/><addaction name="menuEdit"/><addaction name="menuMeasure"/><addaction name="menuHelp"/>
   </widget>
@@ -168,6 +171,10 @@
   <action name="actThemeSettings"><property name="text"><string>界面主题与对象捕捉设置…</string></property></action>
   <action name="actSnapSettings"><property name="text"><string>对象捕捉设置…</string></property><property name="toolTip"><string>端点 / 顶点、中点、中心、交点、垂足与捕捉半径</string></property></action>
   <action name="actCommandHelp"><property name="text"><string>命令与快捷键…</string></property><property name="shortcut"><string>F1</string></property></action>
+  <action name="actLayerManager"><property name="text"><string>图层管理…</string></property><property name="toolTip"><string>新建 / 重命名 / 删除 / 锁定图层，编辑颜色线型线宽</string></property></action>
+  <action name="actUnitsSettings"><property name="text"><string>单位与精度…</string></property><property name="toolTip"><string>设置 $INSUNITS 与测量结果小数位</string></property></action>
+  <action name="actMirror"><property name="text"><string>镜像</string></property></action>
+  <action name="actScale"><property name="text"><string>缩放</string></property></action>
   <action name="actAbout"><property name="text"><string>关于 IloveCAD</string></property></action>
  </widget>
  <customwidgets>
