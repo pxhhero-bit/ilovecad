@@ -115,9 +115,14 @@ def main() -> int:
         src_path = TP / src["archive"]
         try:
             ensure(src["url"], src_path, src["sha256"], "source tarball", pin, "source")
-        except Exception as exc:  # network mirror fallback
-            print(f"  primary source download failed ({exc}); trying GNU mirror")
-            ensure(src["gnu_mirror"], src_path, src["sha256"], "source tarball", pin, "source")
+        except Exception as exc:
+            # The GNU mirror only carries the 0.14 release tarball, which is
+            # NOT the same source as this pinned nightly. Never substitute it:
+            # GPL corresponding source must match the shipped binary exactly.
+            raise SystemExit(
+                f"无法获取与锁定版本 {pin['version']} 一致的对应源码：{exc}\n"
+                "GNU 镜像只有 0.14 正式版，不能替代 nightly 源码；请检查网络后重试。"
+            ) from exc
         with tarfile.open(src_path) as tf:
             print(f"  source archive contains {len(tf.getnames())} entries")
 

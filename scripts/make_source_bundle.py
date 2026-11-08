@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TP = ROOT / "third_party" / "libredwg"
 DIST = ROOT / "dist"
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "bin", "generated", "screenshots", "dist"}
-SKIP_SUFFIX = {".pyc", ".pyo", ".zip", ".tar.xz", ".dwg", ".dxf", ".pdf", ".log"}
+SKIP_SUFFIX = {".pyc", ".pyo", ".zip", ".xz", ".gz", ".dwg", ".dxf", ".pdf", ".log"}
 
 
 def main() -> int:
