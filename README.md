@@ -98,6 +98,7 @@ R2004 DWG 或 AC1018 DXF，带进度与逐文件日志；输出文件名自动�
 ## 目录结构
 
 ```
+main.py                    根目录入口：python main.py [图纸.dwg|.dxf]
 src/ilovecad/
   kernel/     LibreDWG 适配层：版本闸门、源头降版本、R2004 写入锁定、导入报告
   model/      文档模型：实体、图层、单位、几何计算
@@ -107,11 +108,11 @@ src/ilovecad/
   theme.py    深色 / 浅色主题配色与本机设置持久化
   preferences.py  对象捕捉配置的本机 INI 读写
   fonts.py    统一的中文 fallback 字体策略
-  app.py      入口
+  app.py      应用逻辑入口（创建 QApplication 与主窗口，由 main.py 调用）
 scripts/
   fetch_libredwg.py      下载并校验锁定版本的 LibreDWG（含对应源码）
   compile_ui.py          把 .ui 编译为 Python
-  run.py                 启动器
+  run.py                 兼容启动器（与 main.py 等价）
   make_source_bundle.py  生成合规的对应源码包
 tests/                   单元测试与往返回归
 ```
@@ -121,9 +122,15 @@ tests/                   单元测试与往返回归
 ```bash
 python -m pip install -r requirements.txt
 python scripts/fetch_libredwg.py          # 下载锁定的 LibreDWG 二进制 + 源码
-python scripts/compile_ui.py              # 编译 .ui -> Python
-python scripts/run.py                     # 启动
+python scripts/compile_ui.py              # 编译 .ui -> Python（启动时也会自动重编）
+python main.py                            # 启动
+python main.py tests/台秤方案.dwg          # 启动并直接打开图纸
+python scripts/run.py                     # 等价的兼容启动器
 ```
+
+入口文件就是仓库根目录的 `main.py`；它只负责把 `src/` 加入模块搜索路径，
+然后调用 `src/ilovecad/app.py` 的 `main()`。命令行传入的第一个 `.dwg` /
+`.dxf` 路径会在启动时自动打开，也可以把图纸直接拖到 `main.py` 上运行。
 
 Linux / macOS 上没有官方预编译包时，`fetch_libredwg.py` 会打印源码构建命令；
 按 `THIRD_PARTY.md` 用 `./configure && make` 构建即可，程序会自动探测

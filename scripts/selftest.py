@@ -515,10 +515,40 @@ def main() -> int:
     step("红队查漏补缺回归 + 真实图纸")
     redteam_checks(kernel, result)
 
+    step("根入口 main.py 与命令行直接打开图纸")
+    entry = ROOT / "main.py"
+    assert entry.is_file(), "根目录 main.py 缺失"
+    import ilovecad.app as app_module
+
+    created: list[MainWindow] = []
+    real_cls, real_exec = app_module.MainWindow, QApplication.exec
+
+    class _Probe(real_cls):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            created.append(self)
+
+    sample = WORK / "selftest_r2004.dwg"
+    app_module.MainWindow = _Probe
+    QApplication.exec = lambda self: 0        # 不进入交互式事件循环
+    try:
+        app_module.main([str(sample)])
+    finally:
+        app_module.MainWindow = real_cls
+        QApplication.exec = real_exec
+    assert len(created) == 1, "main() 未创建主窗口"
+    win = created[0]
+    assert Path(win.current_path or "") == sample, "命令行图纸未被打开"
+    assert win.doc.entities, "命令行图纸解析为空"
+    result["entrypoint"] = {"file": "main.py", "argv_drawing": str(sample),
+                            "entities": len(win.doc.entities)}
+    win.close()
+
     step("SPDX 头覆盖检查")
     sources = [p for p in list((ROOT / "src").rglob("*.py"))
                + list((ROOT / "src").rglob("*.ui"))
                + list((ROOT / "scripts").glob("*.py"))
+               + [entry]
                if "generated" not in p.parts and "__pycache__" not in p.parts]
     missing = [str(p.relative_to(ROOT)) for p in sources
                if "SPDX-License-Identifier: GPL-3.0-or-later"
