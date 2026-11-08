@@ -314,6 +314,149 @@ def redteam_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     return checks
 
 
+def readonly_checks(kernel: LibreDwgKernel, result: dict) -> dict:
+    """Read-only source layer / explicit degradation regression."""
+    from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
+
+    from ilovecad.kernel.core import KernelError
+    import ilovecad.ui.main_window as mw
+
+    source = WORK / "selftest_r2004.dwg"
+    assert source.is_file(), "run the R2004 write test first"
+    before = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    # ---------------------------------------------------------- kernel layer
+    session = kernel.read_session(source)
+    assert session.read_only and session.source_sha256 == before
+    assert session.import_dxf and session.document.entities
+    assert "源文件" in "\n".join(session.risk_lines())
+    lossless = WORK / "readonly_copy.dwg"
+    report = kernel.copy_source(session, lossless)
+    assert hashlib.sha256(lossless.read_bytes()).hexdigest() == before
+    assert "按字节复制" in report.to_text()
+    for bad in (source, WORK / "readonly_copy.dxf"):
+        try:
+            kernel.copy_source(session, bad)
+            raise AssertionError("copy_source accepted an unsafe target")
+        except KernelError:
+            pass
+    volatile = WORK / "readonly_volatile.dwg"
+    volatile.write_bytes(source.read_bytes())
+    vs = kernel.read_session(volatile)
+    volatile.write_bytes(volatile.read_bytes() + b"EXTERNAL-CHANGE")
+    try:
+        kernel.copy_source(vs, WORK / "readonly_volatile_copy.dwg")
+        raise AssertionError("external source change was not detected")
+    except KernelError:
+        pass
+    volatile.write_bytes(source.read_bytes())
+
+    # -------------------------------------------------------------- UI layer
+    win = mw.MainWindow()
+    win._persist_snapping = False
+    win.open_file(source)
+    assert win.session.read_only and win.canvas.read_only
+    assert "[只读]" in win.windowTitle() and "只读" in win.lblMode.text()
+    assert "会话模式" in win.ui.reportBrowser.toPlainText()
+    n = len(win.doc.entities)
+    assert win.canvas.set_mode("draw_line") is False
+    assert win.canvas.mode == "select"
+    win.doc.entities[0].selected = True
+    win.canvas.delete_selected()
+    win.canvas.undo()
+    assert len(win.doc.entities) == n, "read-only gate allowed a mutation"
+
+    calls: list = []
+    real_write = win.kernel.write
+    win.kernel.write = lambda *a, **k: calls.append(a) or real_write(*a, **k)
+    msg_exec, msg_clicked = QMessageBox.exec, QMessageBox.clickedButton
+    QMessageBox.exec = lambda self: 0
+    QMessageBox.clickedButton = lambda self: None
+    try:
+        win.save()                 # must be refused by the read-only gate
+        win.export_dxf()           # rebuild export must be refused too
+    finally:
+        QMessageBox.exec, QMessageBox.clickedButton = msg_exec, msg_clicked
+    assert not calls, "read-only session reached the DWG write pipeline"
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+
+    ui_copy = WORK / "readonly_ui_copy.dwg"
+    get_save = QFileDialog.getSaveFileName
+    QFileDialog.getSaveFileName = staticmethod(
+        lambda *a, **k: (str(ui_copy), ""))
+    try:
+        win.save_as()              # read-only Save As == lossless byte copy
+    finally:
+        QFileDialog.getSaveFileName = get_save
+    assert ui_copy.exists()
+    assert hashlib.sha256(ui_copy.read_bytes()).hexdigest() == before
+    assert not calls
+
+    dlg = mw.EditModeDialog(win.session, win)
+    text = dlg.ui.riskText.toPlainText()
+    assert all(word in text for word in ("源文件", "R2004", "降级"))
+    dlg.close()
+    dlg_exec = mw.EditModeDialog.exec
+    mw.EditModeDialog.exec = lambda self: QDialog.Rejected
+    try:
+        assert win._confirm_enter_edit() is False
+    finally:
+        mw.EditModeDialog.exec = dlg_exec
+    assert win.session.read_only, "cancelling the risk dialog must stay read-only"
+
+    lm = mw.LayerManagerDialog(win.doc, "0", win.canvas.undo_stack, win,
+                               read_only=True)
+    assert lm.read_only and not lm.ui.btnNewLayer.isEnabled()
+    lm.close()
+
+    mw.EditModeDialog.exec = lambda self: QDialog.Accepted
+    try:
+        assert win._confirm_enter_edit() is True
+    finally:
+        mw.EditModeDialog.exec = dlg_exec
+    assert not win.session.read_only and win.session.degraded
+    assert not win.canvas.read_only
+    assert "编辑模式" in win.ui.reportBrowser.toPlainText()
+    assert "[编辑" in win.windowTitle()
+    assert win.canvas.set_mode("draw_line") is True
+    assert win._verify_source_unchanged() is True
+    assert "源文件保护" in win._source_protect_reason(), \
+        "the original source must stay protected even after degradation"
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+
+    # A real high-version drawing must produce a concrete, quantified risk list.
+    real = Path(os.environ.get("ILOVECAD_REAL_DRAWING", ""))
+    if not real.is_file():
+        candidates = sorted(p for p in (ROOT / "tests").glob("*.dwg")
+                            if p.is_file())
+        real = candidates[0] if candidates else Path("")
+    realworld_risks = False
+    if real.is_file():
+        rs = kernel.read_session(real)
+        risks = "\n".join(rs.risk_lines())
+        assert rs.read_only and rs.import_dxf
+        assert rs.source_sha256 == hashlib.sha256(real.read_bytes()).hexdigest()
+        assert "SPLINE" in risks and "跳过" in risks, \
+            "risk list must quantify approximated and skipped objects"
+        realworld_risks = True
+
+    win.kernel.write = real_write
+    win.close()
+    checks = {
+        "default_readonly": True,
+        "external_change_detected": True,
+        "realworld_risks": realworld_risks,
+        "canvas_hard_gate": True,
+        "lossless_copy_sha256": before[:16],
+        "risk_dialog": True,
+        "cancel_keeps_readonly": True,
+        "confirmed_degradation": True,
+        "source_unchanged": True,
+    }
+    result["readonly"] = checks
+    return checks
+
+
 def main() -> int:
     WORK.mkdir(parents=True, exist_ok=True)
     SHOTS.mkdir(exist_ok=True)
@@ -514,6 +657,9 @@ def main() -> int:
 
     step("红队查漏补缺回归 + 真实图纸")
     redteam_checks(kernel, result)
+
+    step("只读 / 编辑分层回归")
+    readonly_checks(kernel, result)
 
     step("根入口 main.py 与命令行直接打开图纸")
     entry = ROOT / "main.py"

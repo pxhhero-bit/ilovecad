@@ -46,6 +46,13 @@ MODE_HINTS = {
     "delete": "删除：删除当前选中的对象。",
 }
 
+# Modes that mutate DwgDocument. Measuring, snapping, selection and view
+# changes are read-only operations and stay available in a viewer session.
+EDIT_MODES = frozenset({
+    "draw_line", "draw_polyline", "draw_rect", "draw_circle", "draw_arc",
+    "draw_text", "move", "copy", "rotate", "mirror", "scale", "delete",
+})
+
 
 class CadCanvas(QWidget):
     statusMessage = Signal(str)
@@ -56,6 +63,7 @@ class CadCanvas(QWidget):
     documentEdited = Signal()
     snapStateChanged = Signal(bool)
     snapHint = Signal(str)
+    editBlocked = Signal(str)          # a write attempt hit the read-only gate
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +73,9 @@ class CadCanvas(QWidget):
         self.undo_stack = UndoStack(self.doc)
         self.view = ViewTransform()
         self.mode = "select"
+        # A read-only session must be opened explicitly by the window; a blank
+        # unsaved document stays editable (there is no source to protect).
+        self.read_only = False
         self.current_layer = "0"
         self.points: list[Point] = []
         self._angle_entities: list[Entity] = []
@@ -115,9 +126,39 @@ class CadCanvas(QWidget):
         self.update()
         self.documentEdited.emit()
 
-    def set_mode(self, mode: str) -> None:
+    def set_read_only(self, value: bool) -> bool:
+        """Switch the hard write gate; entering read-only cancels any command."""
+        self.read_only = bool(value)
+        if self.read_only:
+            self.mode = "select"
+            self.points.clear()
+            self._angle_entities.clear()
+            self._rubber = None
+            self.undo_stack.clear()
+            self._emit_hint()
+        self.update()
+        return self.read_only
+
+    def _block_edit(self, what: str) -> None:
+        self.editBlocked.emit(what)
+        self.statusMessage.emit(
+            "只读会话：看图 / 测量 / PDF 可用；如需编辑请输入 EDIT 或点"
+            "「进入编辑」，确认降级风险后才启用写入管线")
+
+    def _reset_to_select(self) -> None:
+        self.mode = "select"
+        self.points.clear()
+        self._angle_entities.clear()
+        self._rubber = None
+        self._emit_hint()
+        self.update()
+
+    def set_mode(self, mode: str) -> bool:
         if mode not in MODE_HINTS:
-            return
+            return False
+        if self.read_only and mode in EDIT_MODES:
+            self._block_edit(mode)
+            return False
         self.mode = mode
         self.points.clear()
         self._angle_entities.clear()
@@ -125,9 +166,10 @@ class CadCanvas(QWidget):
         if mode == "delete":
             self.delete_selected()
             self.set_mode("select")
-            return
+            return True
         self._emit_hint()
         self.update()
+        return True
 
     def _emit_hint(self) -> None:
         self.hintMessage.emit(MODE_HINTS.get(self.mode, "就绪"))
@@ -520,6 +562,9 @@ class CadCanvas(QWidget):
         self.invalidate()
 
     def delete_selected(self) -> None:
+        if self.read_only:
+            self._block_edit("delete")
+            return
         selected = [e for e in self.doc.entities if e.selected]
         ids = {e.eid for e in selected if self.doc.editable(e)}
         skipped = len(selected) - len(ids)
@@ -538,6 +583,9 @@ class CadCanvas(QWidget):
                 + (f"；跳过 {skipped} 个锁定图层对象" if skipped else ""))
 
     def undo(self) -> None:
+        if self.read_only:
+            self._block_edit("undo")
+            return
         label = self.undo_stack.undo()
         if label:
             self.refresh()
@@ -546,6 +594,9 @@ class CadCanvas(QWidget):
             self.statusMessage.emit("没有可撤销的操作")
 
     def redo(self) -> None:
+        if self.read_only:
+            self._block_edit("redo")
+            return
         label = self.undo_stack.redo()
         if label:
             self.refresh()
@@ -554,6 +605,9 @@ class CadCanvas(QWidget):
             self.statusMessage.emit("没有可重做的操作")
 
     def _add(self, ent: Entity) -> None:
+        if self.read_only:
+            self._block_edit("draw")
+            return
         self.undo_stack.perform(f"绘制 {ent.kind}", lambda: self.doc.add(ent))
         self.refresh()
         self.statusMessage.emit(f"已添加 {ent.kind}")
@@ -564,6 +618,11 @@ class CadCanvas(QWidget):
     # ------------------------------------------------------------- tool logic
     def _handle_click(self, q: Point) -> None:
         m = self.mode
+        if self.read_only and m in EDIT_MODES:
+            # Defence in depth: a caller may have set .mode directly.
+            self._block_edit(m)
+            self._reset_to_select()
+            return
         if m == "distance":
             self.points.append(q)
             if len(self.points) == 2:
@@ -676,6 +735,9 @@ class CadCanvas(QWidget):
         self.update()
 
     def _apply_transform(self, mode: str, param=None) -> None:
+        if self.read_only:
+            self._block_edit(mode)
+            return
         selected = [e for e in self.doc.entities if e.selected]
         ids = {e.eid for e in selected if self.doc.editable(e)}
         skipped = len(selected) - len(ids)

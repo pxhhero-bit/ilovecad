@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..model.document import DwgDocument
+from ..model.session import (DocumentSession, READONLY, sha256_file)
 from ..version import (MAX_DIRECT_READ_VERSION, TARGET_VERSION,
                        TARGET_VERSION_FLAG, VERSION_LABELS, VERSION_ORDER)
 from .dxf_codec import normalize_newlines, parse_dxf, write_dxf
@@ -174,22 +175,41 @@ class LibreDwgKernel:
 
     # --------------------------------------------------------------------- read
     def read(self, path: str | Path) -> tuple[DwgDocument, ImportReport]:
+        """Compatibility API: the (document, report) pair of a read-only session.
+
+        Batch conversion and self-tests use this. The main window uses
+        :meth:`read_session`, which also keeps the untouched source layer.
+        """
+        session = self.read_session(path)
+        return session.document, session.report
+
+    def read_session(self, path: str | Path) -> DocumentSession:
+        """Import a drawing into a **read-only** session.
+
+        The original bytes are hashed and left untouched; the complete DXF
+        emitted by the importer is retained as a snapshot; only the parsed 2D
+        model is used for viewing.  Editing requires an explicit degradation
+        step in the UI (see ``model.session.DocumentSession.enter_edit``).
+        """
         source = Path(path)
         if not source.exists():
             raise KernelError(f"文件不存在：{source}")
         if source.stat().st_size > MAX_FILE_BYTES:
             raise KernelError("文件超过 200 MB 上限，已拒绝处理")
+        source_sha256 = sha256_file(source)
         report = ImportReport(path=str(source))
         source_version = self.detect_version(source)
         report.source_version = source_version
+        is_dxf = source.suffix.lower() in (".dxf", ".dxfb")
+        import_dxf = b""
 
         with tempfile.TemporaryDirectory(prefix="ilovecad_") as td:
             work = Path(td)
-            if source.suffix.lower() in (".dxf", ".dxfb"):
+            if is_dxf:
                 report.steps.append("识别为 DXF，直接由内部 DXF 编解码器解析")
-                data = normalize_newlines(source.read_bytes())
+                import_dxf = normalize_newlines(source.read_bytes())
                 report.effective_version = source_version or "DXF"
-                doc, parsed = parse_dxf(data)
+                doc, parsed = parse_dxf(import_dxf)
                 report.steps.append("DXF 分组码解析完成")
             else:
                 need_downgrade = (source_version and
@@ -227,7 +247,8 @@ class LibreDwgKernel:
                 except KernelError as exc:
                     raise KernelError(f"LibreDWG 无法解码该文件：\n{exc}") from exc
                 report.steps.append("dwgread -O DXF 输出并规范化 CR CR LF 换行")
-                doc, parsed = parse_dxf(dxf.read_bytes())
+                import_dxf = dxf.read_bytes()
+                doc, parsed = parse_dxf(import_dxf)
                 report.steps.append("DXF 分组码解析为 2D 文档模型")
 
             doc.source_path = str(source)
@@ -245,7 +266,68 @@ class LibreDwgKernel:
             if report.skipped:
                 report.notes.append(
                     f"共 {sum(report.skipped.values())} 个对象未进入 2D 模型；保存时不会写回")
-            return doc, report
+            session = DocumentSession(
+                source_path=source, source_sha256=source_sha256,
+                source_format="dxf" if is_dxf else "dwg",
+                source_version=source_version, import_dxf=import_dxf,
+                document=doc, report=report, mode=READONLY)
+            report.steps.append(
+                "已建立只读会话：源文件哈希登记、导入 DXF 快照保留，"
+                "2D 模型仅用于看图")
+            report.notes.append(
+                "本次打开为只读；需编辑时请输入 EDIT 或点「进入编辑」，"
+                "确认降级风险后才启用写入管线")
+            return session
+
+    # ---------------------------------------------------------- lossless copy
+    def copy_source(self, session: DocumentSession,
+                    target: str | Path) -> ImportReport:
+        """Read-only 'save a copy': byte-for-byte copy of the original file.
+
+        Unlike :meth:`write`, this never parses, re-serialises or downgrades
+        anything, so XDATA / proxy objects / high-version features survive.
+        """
+        src = session.source_path
+        dest = Path(target)
+        if src is None or not src.exists():
+            raise KernelError("没有可用的源文件，无法另存原样副本")
+        if dest.resolve() == src.resolve():
+            raise KernelError("不能覆盖当前打开的源文件，请换一个文件名或目录。")
+        suffix = src.suffix.lower()
+        if dest.suffix.lower() != suffix:
+            raise KernelError(
+                f"原样副本必须保持源格式 {suffix}；当前目标为 "
+                f"{dest.suffix or '无扩展名'}。需要格式转换请使用批量转换。")
+        current = sha256_file(src)
+        if session.source_sha256 and current != session.source_sha256:
+            raise KernelError(
+                "源文件在打开之后被外部程序修改，已拒绝复制。"
+                "请重新打开图纸以刷新只读会话。")
+        report = ImportReport(path=str(dest),
+                              source_version=session.source_version,
+                              effective_version=session.source_version)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".ilovecad_copy_", suffix=suffix,
+                                        dir=str(dest.parent))
+        os.close(fd)
+        tmp = Path(tmp_name)
+        try:
+            shutil.copyfile(src, tmp)
+            if sha256_file(tmp) != current:
+                raise KernelError("副本校验失败：SHA-256 与源文件不一致，已放弃落盘")
+            os.replace(tmp, dest)
+        finally:
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+        report.steps = [
+            "只读会话：源文件按字节复制，未经 DXF 重建或版本转换",
+            f"复制前后 SHA-256 校验一致：{current[:16]}…",
+            "原子替换目标文件；源文件从未改写",
+        ]
+        report.notes = ["这是无损原样副本，包含源文件的全部数据（含 XDATA / 代理对象）。",
+                        "当前内存中的 2D 模型不参与此操作。"]
+        report.counts = {"entities": len(session.document.entities)}
+        return report
 
     # -------------------------------------------------------------------- write
     def write(self, doc: DwgDocument, target: str | Path) -> ImportReport:

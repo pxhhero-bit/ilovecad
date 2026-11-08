@@ -19,14 +19,30 @@ COL_NAME, COL_COLOR, COL_LTYPE, COL_LW, COL_COUNT = 4, 5, 6, 7, 8
 
 class LayerManagerDialog(QDialog):
     def __init__(self, doc: DwgDocument, current_layer: str = "0",
-                 undo_stack: UndoStack | None = None, parent=None):
+                 undo_stack: UndoStack | None = None, parent=None,
+                 *, read_only: bool = False):
         super().__init__(parent)
         self.ui = load_ui(self, "layer_manager")
         self.doc = doc
         self.undo_stack = undo_stack
+        self.read_only = read_only
         self.current_layer_name = current_layer if current_layer in doc.layers else "0"
         self.changed = 0
         self._loading = False
+        if read_only:
+            self.setWindowTitle("图层管理（只读查看）")
+            self.ui.labelLayersTitle.setText(
+                "只读会话：可查看图层与实体数、切换显隐 / 当前图层；"
+                "新建 / 重命名 / 删除 / 锁定 / 样式修改需在确认降级后使用 EDIT")
+            self.ui.labelLayerHelp.setText(
+                "只读查看：勾选「显示」只影响当前视图，不写回文件；"
+                "「冻结 / 锁定 / 颜色 / 线型 / 线宽」不可修改。"
+                "需要编辑图层请关闭本窗口，输入 EDIT 确认降级后再打开。")
+            for name in ("btnNewLayer", "btnRenameLayer", "btnDeleteLayer",
+                         "btnAllUnlocked"):
+                widget = getattr(self.ui, name, None)
+                if widget is not None:
+                    widget.setEnabled(False)
         t = self.ui.layerTable
         t.setEditTriggers(t.EditTrigger.NoEditTriggers)
         t.setSelectionBehavior(t.SelectionBehavior.SelectRows)
@@ -57,7 +73,10 @@ class LayerManagerDialog(QDialog):
                             (COL_FROZEN, layer.frozen),
                             (COL_LOCKED, layer.locked)):
                 item = QTableWidgetItem("")
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                flags = item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+                if self.read_only and col in (COL_FROZEN, COL_LOCKED):
+                    flags &= ~Qt.ItemFlag.ItemIsEnabled
+                item.setFlags(flags)
                 item.setCheckState(Qt.CheckState.Checked if on
                                    else Qt.CheckState.Unchecked)
                 t.setItem(row, col, item)
@@ -92,6 +111,8 @@ class LayerManagerDialog(QDialog):
     # ----------------------------------------------------------------- helpers
     def _apply(self, label: str, fn) -> bool:
         """Wrap a layer edit in the shared undo stack when one is available."""
+        if self.read_only:                    # defence in depth
+            return False
         try:
             if self.undo_stack is not None:
                 ok = self.undo_stack.perform(label, fn)
@@ -109,11 +130,22 @@ class LayerManagerDialog(QDialog):
     def _on_item_changed(self, item) -> None:
         if self._loading:
             return
+        col = item.column()
+        if self.read_only:
+            # Only visibility is a view-only toggle; freeze / lock / style are
+            # drawing data and stay disabled in a viewer session.
+            name = self._name_at(item.row())
+            if col == COL_VISIBLE and name is not None:
+                on = item.checkState() == Qt.CheckState.Checked
+                layer_ops.set_flags(self.doc, name, visible=on,
+                                    frozen=False if on else None)
+            else:
+                self._reload()
+            return
         name = self._name_at(item.row())
         if name is None:
             return
         on = item.checkState() == Qt.CheckState.Checked
-        col = item.column()
         if col == COL_VISIBLE:
             self._apply(f"图层 {name} 显示状态", lambda: layer_ops.set_flags(
                 self.doc, name, visible=on, frozen=False if on else None))
@@ -190,6 +222,10 @@ class LayerManagerDialog(QDialog):
             self._reload()
 
     def all_on(self) -> None:
+        if self.read_only:
+            layer_ops.all_on(self.doc)
+            self._reload()
+            return
         self._apply("全部图层显示", lambda: layer_ops.all_on(self.doc))
 
     def all_unlocked(self) -> None:
@@ -199,6 +235,8 @@ class LayerManagerDialog(QDialog):
         self._apply("全部图层解锁", fn)
 
     def _on_double_click(self, row: int, col: int) -> None:
+        if self.read_only:
+            return
         name = self._name_at(row)
         if name is None:
             return

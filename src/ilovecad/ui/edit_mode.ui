@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<ui version="4.0">
+ <class>EditModeDialog</class>
+ <widget class="QDialog" name="EditModeDialog">
+  <property name="windowTitle"><string>进入编辑模式 · 降级风险确认</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>760</width><height>560</height></rect></property>
+  <layout class="QVBoxLayout" name="vboxEditMode">
+   <item><widget class="QLabel" name="labelTitle"><property name="text"><string>只读会话 → 2D 可编辑模型（降级）</string></property><property name="styleSheet"><string notr="true">font-size:17px;font-weight:bold;</string></property></widget></item>
+   <item><widget class="QLabel" name="labelIntro"><property name="text"><string>打开图纸时默认只读：源文件字节、导入 DXF 快照与 2D 显示模型分层保存，写入管线完全关闭。编辑是一次不可撤销的降级——只会修改内存中的 2D 近似模型，不会改写源文件。请核对以下风险后再决定。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><widget class="QTextBrowser" name="riskText"><property name="lineWrapMode"><enum>QTextEdit::WidgetWidth</enum></property></widget></item>
+   <item><widget class="QLabel" name="labelFooter"><property name="text"><string>源文件在任何模式下都不会被改写；编辑后的保存 / 另存为始终锁定 R2004 / AC1018 并通过回读校验。取消则继续保持只读。</string></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+   <item><widget class="QDialogButtonBox" name="buttonBox"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="standardButtons"><enum>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</enum></property></widget></item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

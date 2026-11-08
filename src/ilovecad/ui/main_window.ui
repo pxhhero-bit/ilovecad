@@ -30,6 +30,7 @@
         <item><widget class="QToolButton" name="btnSaveAs"><property name="text"><string>另存为</string></property><property name="toolTip"><string>始终输出 AC1018 / R2004</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnImportReport"><property name="text"><string>导入报告</string></property><property name="toolTip"><string>查看降版本与跳过对象明细</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnAbout"><property name="text"><string>关于</string></property><property name="toolTip"><string>版本与许可说明</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnSaveCopy"><property name="text"><string>原样副本</string></property><property name="toolTip"><string>按字节复制源文件，SHA-256 校验，不经 DXF 重建（只读可用）</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerFile"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
       </widget>
@@ -70,6 +71,7 @@
         <item><widget class="QToolButton" name="btnDelete"><property name="text"><string>删除</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnMirror"><property name="text"><string>镜像</string></property><property name="toolTip"><string>先选中对象，再点取镜像轴两点</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnScale"><property name="text"><string>缩放</string></property><property name="toolTip"><string>先选中对象，再点取基点并输入比例</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnEnterEdit"><property name="text"><string>进入编辑</string></property><property name="toolTip"><string>默认只读；确认降级风险后启用 2D 可编辑模型（EDIT）</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerEdit"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
       </widget>
@@ -143,9 +145,9 @@
   </widget>
   <widget class="QMenuBar" name="menubar">
    <property name="geometry"><rect><x>0</x><y>0</y><width>1440</width><height>26</height></rect></property>
-   <widget class="QMenu" name="menuFile"><property name="title"><string>文件(&amp;F)</string></property><addaction name="actOpen"/><addaction name="actSave"/><addaction name="actSaveAs"/><addaction name="separator"/><addaction name="actExportPdf"/><addaction name="actExportDxf"/><addaction name="actBatchConvert"/><addaction name="separator"/><addaction name="actQuit"/></widget>
+   <widget class="QMenu" name="menuFile"><property name="title"><string>文件(&amp;F)</string></property><addaction name="actOpen"/><addaction name="actSave"/><addaction name="actSaveAs"/><addaction name="actSaveSourceCopy"/><addaction name="separator"/><addaction name="actExportPdf"/><addaction name="actExportDxf"/><addaction name="actBatchConvert"/><addaction name="separator"/><addaction name="actQuit"/></widget>
    <widget class="QMenu" name="menuView"><property name="title"><string>视图(&amp;V)</string></property><addaction name="actFit"/><addaction name="actZoomIn"/><addaction name="actZoomOut"/><addaction name="separator"/><addaction name="actThemeSettings"/><addaction name="actSnapSettings"/></widget>
-   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/><addaction name="separator"/><addaction name="actMirror"/><addaction name="actScale"/><addaction name="separator"/><addaction name="actLayerManager"/></widget>
+   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actEnterEdit"/><addaction name="separator"/><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/><addaction name="separator"/><addaction name="actMirror"/><addaction name="actScale"/><addaction name="separator"/><addaction name="actLayerManager"/></widget>
    <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/><addaction name="actMeasureAngle"/><addaction name="actMeasureAngleLines"/><addaction name="separator"/><addaction name="actUnitsSettings"/></widget>
    <widget class="QMenu" name="menuHelp"><property name="title"><string>帮助(&amp;H)</string></property><addaction name="actCommandHelp"/><addaction name="separator"/><addaction name="actAbout"/></widget>
    <addaction name="menuFile"/><addaction name="menuView"/><addaction name="menuEdit"/><addaction name="menuMeasure"/><addaction name="menuHelp"/>
@@ -154,6 +156,8 @@
   <action name="actOpen"><property name="text"><string>打开图纸</string></property><property name="shortcut"><string>Ctrl+O</string></property></action>
   <action name="actSave"><property name="text"><string>保存 (R2004)</string></property><property name="shortcut"><string>Ctrl+S</string></property></action>
   <action name="actSaveAs"><property name="text"><string>另存为…</string></property><property name="shortcut"><string>Ctrl+Shift+S</string></property></action>
+  <action name="actSaveSourceCopy"><property name="text"><string>另存原样副本（无损）…</string></property><property name="toolTip"><string>按字节复制源文件，SHA-256 校验，不经 DXF 重建</string></property></action>
+  <action name="actEnterEdit"><property name="text"><string>进入编辑模式（降级）…</string></property><property name="toolTip"><string>默认只读；确认风险后启用 2D 可编辑模型，命令 EDIT</string></property></action>
   <action name="actExportPdf"><property name="text"><string>导出 PDF</string></property><property name="shortcut"><string>Ctrl+P</string></property></action>
   <action name="actExportDxf"><property name="text"><string>导出 DXF</string></property></action>
   <action name="actBatchConvert"><property name="text"><string>批量转换…</string></property><property name="toolTip"><string>批量输出 R2004 DWG / AC1018 DXF，不改写源文件</string></property></action>

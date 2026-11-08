@@ -24,6 +24,7 @@ UI_CLASSES = {
     "settings": "Ui_SettingsDialog",
     "batch_convert": "Ui_BatchConvertDialog",
     "layer_manager": "Ui_LayerManagerDialog",
+    "edit_mode": "Ui_EditModeDialog",
 }
 
 

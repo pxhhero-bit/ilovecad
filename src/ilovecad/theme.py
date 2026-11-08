@@ -100,6 +100,9 @@ QPushButton {
     border-radius:3px; padding:4px 10px;
 }
 QPushButton:hover { background:%(hover)s; }
+QPushButton:disabled, QToolButton:disabled {
+    color:%(muted)s; background:%(panel)s; border:1px solid %(border)s;
+}
 QGroupBox {
     color:%(fg)s; border:1px solid %(border)s; border-radius:4px;
     margin-top:18px; padding-top:12px;
