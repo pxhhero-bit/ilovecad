@@ -359,73 +359,126 @@ class _Writer:
 
 
 def write_dxf(doc: DwgDocument) -> bytes:
-    """Serialise the 2D model into an AC1018 ASCII DXF for LibreDWG."""
+    """Serialise the 2D model into a structurally complete AC1018 ASCII DXF.
+
+    LibreDWG's DXF importer requires a BLOCK_RECORD table, unique handles and
+    owner (330) references. Without them dwgwrite reports
+    "dwg.block_control ... missing" and silently drops every entity. The
+    skeleton below mirrors a dwgread -O DXF export and round-trips R2004.
+    """
     w = _Writer()
+    # Fixed low handles for tables/records; entity handles start at 0x1000 so
+    # they can never collide with table records no matter how many layers exist.
+    next_handle = 0x1000
+
+    def H() -> str:
+        nonlocal next_handle
+        h = format(next_handle, "X")
+        next_handle += 1
+        return h
+
+    MODEL_BR, PAPER_BR = "10", "11"  # BLOCK_RECORD handles
+
     w.p(999, "IloveCAD 2D / GPL-3.0-or-later")
     w.p(0, "SECTION"); w.p(2, "HEADER")
     w.p(9, "$ACADVER"); w.p(1, TARGET_VERSION)
     w.p(9, "$INSUNITS"); w.p(70, doc.units)
     w.p(9, "$MEASUREMENT"); w.p(70, 1)
+    w.p(9, "$HANDSEED"); w.p(5, "__HANDSEED__")
     b = doc.bounds() or (0, 0, 100, 100)
     w.p(9, "$EXTMIN"); w.p(10, f"{b[0]:.6f}"); w.p(20, f"{b[1]:.6f}"); w.p(30, 0)
     w.p(9, "$EXTMAX"); w.p(10, f"{b[2]:.6f}"); w.p(20, f"{b[3]:.6f}"); w.p(30, 0)
     w.p(0, "ENDSEC")
 
     w.p(0, "SECTION"); w.p(2, "TABLES")
-    w.p(0, "TABLE"); w.p(2, "LTYPE"); w.p(70, 1)
-    w.p(0, "LTYPE"); w.p(2, "CONTINUOUS"); w.p(70, 0); w.p(3, "Solid line")
+    w.p(0, "TABLE"); w.p(2, "LTYPE"); w.p(5, "3"); w.p(330, "0")
+    w.p(100, "AcDbSymbolTable"); w.p(70, 1)
+    w.p(0, "LTYPE"); w.p(5, "30"); w.p(330, "3")
+    w.p(100, "AcDbSymbolTableRecord"); w.p(100, "AcDbLinetypeTableRecord")
+    w.p(2, "CONTINUOUS"); w.p(70, 0); w.p(3, "Solid line")
     w.p(72, 65); w.p(73, 0); w.p(40, 0)
     w.p(0, "ENDTAB")
+
     layers = sorted(doc.layers.values(), key=lambda l: l.name)
-    w.p(0, "TABLE"); w.p(2, "LAYER"); w.p(70, len(layers))
+    w.p(0, "TABLE"); w.p(2, "LAYER"); w.p(5, "2"); w.p(330, "0")
+    w.p(100, "AcDbSymbolTable"); w.p(70, len(layers))
     for layer in layers:
-        w.p(0, "LAYER"); w.p(2, layer.name)
+        w.p(0, "LAYER"); w.p(5, H()); w.p(330, "2")
+        w.p(100, "AcDbSymbolTableRecord"); w.p(100, "AcDbLayerTableRecord")
+        w.p(2, layer.name)
         w.p(70, (1 if layer.frozen else 0) + (4 if layer.locked else 0))
         w.p(62, layer.color if layer.visible else -layer.color)
         w.p(6, layer.linetype or "CONTINUOUS")
         w.p(370, int(round((layer.lineweight or 0.25) * 100)))
+        w.p(390, "0")
+    w.p(0, "ENDTAB")
+
+    w.p(0, "TABLE"); w.p(2, "BLOCK_RECORD"); w.p(5, "1"); w.p(330, "0")
+    w.p(100, "AcDbSymbolTable"); w.p(70, 2)
+    for br, name in ((MODEL_BR, "*Model_Space"), (PAPER_BR, "*Paper_Space")):
+        w.p(0, "BLOCK_RECORD"); w.p(5, br); w.p(330, "1")
+        w.p(100, "AcDbSymbolTableRecord"); w.p(100, "AcDbBlockTableRecord")
+        w.p(2, name); w.p(340, "0")
     w.p(0, "ENDTAB")
     w.p(0, "ENDSEC")
 
     w.p(0, "SECTION"); w.p(2, "BLOCKS")
-    for name in ("*Model_Space", "*Paper_Space"):
-        w.p(0, "BLOCK"); w.p(8, "0"); w.p(2, name); w.p(70, 0)
+    for br, name in ((MODEL_BR, "*Model_Space"), (PAPER_BR, "*Paper_Space")):
+        w.p(0, "BLOCK"); w.p(5, H()); w.p(330, br)
+        w.p(100, "AcDbEntity"); w.p(8, "0"); w.p(100, "AcDbBlockBegin")
+        w.p(2, name); w.p(70, 0)
         w.p(10, 0); w.p(20, 0); w.p(30, 0); w.p(3, name); w.p(1, "")
-        w.p(0, "ENDBLK"); w.p(8, "0")
+        w.p(0, "ENDBLK"); w.p(5, H()); w.p(330, br)
+        w.p(100, "AcDbEntity"); w.p(8, "0"); w.p(100, "AcDbBlockEnd")
     w.p(0, "ENDSEC")
+
+    subclasses = {
+        "LINE": "AcDbLine", "LWPOLYLINE": "AcDbPolyline",
+        "CIRCLE": "AcDbCircle", "ARC": "AcDbCircle",
+        "ELLIPSE": "AcDbEllipse", "POINT": "AcDbPoint",
+        "TEXT": "AcDbText", "SOLID": "AcDbTrace",
+    }
+
+    def begin(kind: str, e: Entity, subclass: str | None = None) -> None:
+        w.p(0, kind); w.p(5, H()); w.p(330, MODEL_BR)
+        w.p(100, "AcDbEntity")
+        w.common(e)
+        w.p(100, subclass or subclasses[kind])
 
     w.p(0, "SECTION"); w.p(2, "ENTITIES")
     for e in doc.entities:
         d = e.data
         k = e.kind
         if k == "LINE":
-            w.p(0, "LINE"); w.common(e)
+            begin("LINE", e)
             w.xyz(*d["a"]); w.xyz(*d["b"], xcode=11, ycode=21)
         elif k in ("LWPOLYLINE", "POLYLINE", "SPLINE", "HATCH"):
             points = list(d.get("pts", [])) or (d.get("paths", [None])[0] or [])
             points = [tuple(p[:2]) for p in points if p is not None]
             if len(points) < 2:
                 continue
-            w.p(0, "LWPOLYLINE"); w.common(e)
+            begin("LWPOLYLINE", e)
             w.p(90, len(points)); w.p(70, 1 if (d.get("closed") or k == "HATCH") else 0)
-            for p in points:
-                w.p(10, f"{p[0]:.6f}"); w.p(20, f"{p[1]:.6f}")
-                bulge = p[2] if len(p) > 2 else 0.0
+            for pt in points:
+                w.p(10, f"{pt[0]:.6f}"); w.p(20, f"{pt[1]:.6f}")
+                bulge = pt[2] if len(pt) > 2 else 0.0
                 if bulge:
                     w.p(42, f"{bulge:.6f}")
         elif k == "CIRCLE":
-            w.p(0, "CIRCLE"); w.common(e); w.xyz(*d["c"]); w.p(40, f"{d['r']:.6f}")
+            begin("CIRCLE", e); w.xyz(*d["c"]); w.p(40, f"{d['r']:.6f}")
         elif k == "ARC":
-            w.p(0, "ARC"); w.common(e); w.xyz(*d["c"]); w.p(40, f"{d['r']:.6f}")
+            begin("ARC", e); w.xyz(*d["c"]); w.p(40, f"{d['r']:.6f}")
+            w.p(100, "AcDbArc")
             w.p(50, f"{d['start']:.6f}"); w.p(51, f"{d['end']:.6f}")
         elif k == "ELLIPSE":
-            w.p(0, "ELLIPSE"); w.common(e); w.xyz(*d["c"])
+            begin("ELLIPSE", e); w.xyz(*d["c"])
             w.xyz(*d["major"], xcode=11, ycode=21)
-            w.p(40, f"{d['ratio']:.6f}"); w.p(41, f"{d['start']:.6f}"); w.p(42, f"{d['end']:.6f}")
+            w.p(40, f"{d['ratio']:.6f}"); w.p(41, f"{d['start']:.6f}")
+            w.p(42, f"{d['end']:.6f}")
         elif k == "POINT":
-            w.p(0, "POINT"); w.common(e); w.xyz(*d["p"])
+            begin("POINT", e); w.xyz(*d["p"])
         elif k in ("TEXT", "MTEXT", "DIMENSION"):
-            w.p(0, "TEXT"); w.common(e); w.xyz(*d["p"])
+            begin("TEXT", e); w.xyz(*d["p"])
             w.p(40, f"{d.get('height', 2.5):.6f}")
             w.p(1, _dxf_text(d.get("text", "")))
             w.p(50, f"{d.get('rotation', 0.0):.6f}")
@@ -434,9 +487,9 @@ def write_dxf(doc: DwgDocument) -> bytes:
             pts = list(d.get("pts", []))
             if len(pts) < 3:
                 continue
-            w.p(0, "SOLID"); w.common(e)
-            for idx, p in enumerate(pts[:4]):
-                w.xyz(p[0], p[1], xcode=10 + idx, ycode=20 + idx)
+            begin("SOLID", e)
+            for idx, pt in enumerate(pts[:4]):
+                w.xyz(pt[0], pt[1], xcode=10 + idx, ycode=20 + idx)
     w.p(0, "ENDSEC")
     w.p(0, "EOF")
-    return w.text()
+    return "".join(w.lines).replace("__HANDSEED__", format(next_handle, "X")).encode("utf-8")

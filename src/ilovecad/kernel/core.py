@@ -252,8 +252,10 @@ class LibreDwgKernel:
         dest = Path(target)
         report = ImportReport(path=str(dest), source_version=TARGET_VERSION,
                               effective_version=TARGET_VERSION)
-        with tempfile.TemporaryDirectory(prefix="ilovecad_write_") as td:
-            work = Path(td)
+        # 临时目录必须与目标文件同盘（Windows 不允许跨盘 os.replace）。
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix=".ilovecad_write_", dir=dest.parent))
+        try:
             dxf = work / "model.dxf"
             out = work / "out.dwg"
             dxf.write_bytes(write_dxf(doc))
@@ -271,10 +273,11 @@ class LibreDwgKernel:
             self._read_to_dxf(out, verify)
             vdoc, _ = parse_dxf(verify.read_bytes())
             report.steps.append(f"回读校验通过，可解析 {len(vdoc.entities)} 个 2D 实体")
-            dest.parent.mkdir(parents=True, exist_ok=True)
             os.replace(out, dest)
             report.steps.append("原子替换目标文件，写入完成")
             report.counts = {"entities": len(doc.entities)}
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
         return report
 
     def export_dxf(self, doc: DwgDocument, target: str | Path) -> None:
