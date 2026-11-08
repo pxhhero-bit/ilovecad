@@ -6,8 +6,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QDialog, QFileDialog, QInputDialog, QLabel,
-                               QSizePolicy,
+from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFileDialog,
+                               QInputDialog, QLabel, QSizePolicy,
                                QListWidgetItem, QMainWindow, QMessageBox,
                                QTreeWidgetItem)
 
@@ -16,6 +16,7 @@ from ..kernel.core import ImportReport, KernelError, LibreDwgKernel
 from ..model.document import DwgDocument
 from ..render.displaylist import build
 from ..render.pdf import PdfOptions, PdfRenderer
+from ..theme import apply_theme, is_dark, label as theme_label, load_theme, save_theme
 from ..tools.measure import format_line
 from ..version import TARGET_VERSION_LABEL
 from .loader import load_ui
@@ -23,10 +24,26 @@ from .loader import load_ui
 DWG_FILTER = "DWG / DXF 图纸 (*.dwg *.dxf);;所有文件 (*)"
 
 
+def _localize_button_box(box: QDialogButtonBox) -> None:
+    """Qt shows English stock labels on some locales; keep the UI all-Chinese."""
+    labels = {
+        QDialogButtonBox.StandardButton.Ok: "确定",
+        QDialogButtonBox.StandardButton.Cancel: "取消",
+        QDialogButtonBox.StandardButton.Close: "关闭",
+        QDialogButtonBox.StandardButton.Apply: "应用",
+        QDialogButtonBox.StandardButton.Reset: "重置",
+    }
+    for role, text in labels.items():
+        button = box.button(role)
+        if button is not None:
+            button.setText(text)
+
+
 class PdfExportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ui = load_ui(self, "pdf_export")
+        _localize_button_box(self.ui.buttonBox)
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
 
@@ -47,14 +64,32 @@ class ImportReportDialog(QDialog):
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self.ui = load_ui(self, "import_report")
+        _localize_button_box(self.ui.buttonBox)
         self.ui.reportText.setPlainText(text)
         self.ui.buttonBox.rejected.connect(self.reject)
+
+
+class ThemeSettingsDialog(QDialog):
+    """Dark (default) / light application theme selector."""
+
+    def __init__(self, current_theme: str, parent=None):
+        super().__init__(parent)
+        self.ui = load_ui(self, "settings")
+        _localize_button_box(self.ui.buttonBox)
+        self.ui.radioDark.setChecked(is_dark(current_theme))
+        self.ui.radioLight.setChecked(not is_dark(current_theme))
+        self.ui.buttonBox.accepted.connect(self.accept)
+        self.ui.buttonBox.rejected.connect(self.reject)
+
+    def theme(self) -> str:
+        return "light" if self.ui.radioLight.isChecked() else "dark"
 
 
 class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.ui = load_ui(self, "about")
+        _localize_button_box(self.ui.buttonBox)
         self.ui.aboutText.append(
             f"\n版本：{APP_VERSION}　内核写入版本：{TARGET_VERSION_LABEL}"
             "　许可：GPL-3.0-or-later")
@@ -73,7 +108,14 @@ class MainWindow(QMainWindow):
 
         self.canvas = self.ui.canvas
         self.canvas.set_document(self.doc)
+        # Dark is the default; a previous local choice is restored on startup.
+        self.theme = apply_theme(load_theme())
+        self.canvas.set_dark(is_dark(self.theme))
         self._build_status_bar()
+        # Angle results carry several detail lines; let the narrow result panel
+        # wrap them instead of clipping at the right edge.
+        self.ui.measureList.setWordWrap(True)
+        self.ui.measureList.setUniformItemSizes(False)
         self._connect_ui()
         self._populate_layers()
         self._update_title()
@@ -127,6 +169,7 @@ class MainWindow(QMainWindow):
             "btnZoomWindow": lambda: c.set_mode("zoom_window"),
             "btnPan": lambda: c.set_mode("pan"),
             "btnDark": self._toggle_dark,
+            "btnThemeSettings": self._open_theme_settings,
             "btnDrawLine": lambda: c.set_mode("draw_line"),
             "btnDrawPolyline": lambda: c.set_mode("draw_polyline"),
             "btnDrawRect": lambda: c.set_mode("draw_rect"),
@@ -143,6 +186,8 @@ class MainWindow(QMainWindow):
             "btnMeasureChain": lambda: c.set_mode("chain"),
             "btnMeasureArea": lambda: c.set_mode("area"),
             "btnMeasureRadius": lambda: c.set_mode("radius"),
+            "btnMeasureAngle": lambda: c.set_mode("angle"),
+            "btnMeasureAngleLines": lambda: c.set_mode("angle_lines"),
             "btnMeasureClear": self._clear_measurements,
             "btnExportPdf": self.export_pdf, "btnExportDxf": self.export_dxf,
             "btnLayerAllOn": self._layers_all_on,
@@ -162,6 +207,9 @@ class MainWindow(QMainWindow):
             "actDelete": lambda: c.set_mode("delete"),
             "actMeasureDistance": lambda: c.set_mode("distance"),
             "actMeasureArea": lambda: c.set_mode("area"),
+            "actMeasureAngle": lambda: c.set_mode("angle"),
+            "actMeasureAngleLines": lambda: c.set_mode("angle_lines"),
+            "actThemeSettings": self._open_theme_settings,
             "actAbout": self.show_about,
         }
         for name, slot in action_map.items():
@@ -428,6 +476,8 @@ class MainWindow(QMainWindow):
             "T": "draw_text", "TEXT": "draw_text", "E": "delete",
             "M": "move", "CO": "copy", "RO": "rotate",
             "AREA": "area", "CHAIN": "chain", "R": "radius",
+            "ANG": "angle", "ANGLE": "angle", "DAN": "angle",
+            "AL": "angle_lines", "ANGLELINE": "angle_lines",
             "Z": None, "P": "pan", "SEL": "select", "ESC": "select",
         }
         if cmd in ("Z", "FIT"):
@@ -436,6 +486,9 @@ class MainWindow(QMainWindow):
             return
         if cmd == "PDF":
             self.export_pdf()
+            return
+        if cmd == "THEME":
+            self._open_theme_settings()
             return
         if cmd == "DXF":
             self.export_dxf()
@@ -474,9 +527,26 @@ class MainWindow(QMainWindow):
             return
         self.canvas.set_mode(mode)
 
+    # ------------------------------------------------------------------ theme
+    def set_theme(self, theme: str, persist: bool = True) -> str:
+        """Apply an application-wide theme and keep the canvas in sync."""
+        self.theme = apply_theme(theme)
+        self.canvas.set_dark(is_dark(self.theme))
+        if persist:
+            save_theme(self.theme)
+        self._status(f"界面主题：{theme_label(self.theme)}"
+                     + ("（已保存到本机，下次启动生效）" if persist else ""))
+        return self.theme
+
+    def _open_theme_settings(self):
+        dlg = ThemeSettingsDialog(self.theme, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.set_theme(dlg.theme())
+
     def _toggle_dark(self):
         dark = self.canvas.toggle_dark()
-        self._status("已切换为黑底" if dark else "已切换为白底")
+        self._status(("已切换为黑底" if dark else "已切换为白底")
+                     + "（仅画布；整体主题请在「主题设置」中修改）")
 
     def _on_document_edited(self):
         self.lblScale.setText(f"比例 {self.canvas.view.scale:.4g}")

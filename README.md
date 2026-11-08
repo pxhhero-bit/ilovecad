@@ -35,8 +35,11 @@ ELLIPSE、POINT、TEXT / MTEXT、SOLID、INSERT 块参照展开、SPLINE 折线�
 HATCH / DIMENSION 做简化显示；其余在导入报告中计数说明。
 
 **测量**：端点 / 中点 / 圆心 / 交点 / 最近点 / 垂足捕捉；两点距离及水平垂直
-分量、角度、多段累计长度、闭合区域面积、半径 / 直径 / 弧长；单位换算与精度
-设置；测量结果列表与画布临时标注。
+分量、方位角、多段累计长度、闭合区域面积、半径 / 直径 / 弧长；**夹角测量**
+（三点法「顶点 → 第一边点 → 第二边点」，或直接点取两条直线 / 多段线；输出
+较小夹角、补角、弧度、两边方位角与交点，并在画布和 PDF 上绘制角弧标注）；
+单位换算与精度设置；测量结果列表与画布临时标注。命令别名 `ANG` / `DAN`（三点）
+与 `AL` / `ANGLELINE`（两线）。
 
 **轻量编辑**：点选 / 窗选 / 多选；绘制直线、多段线、矩形、圆、圆弧、文字；
 删除、移动、复制、旋转；改图层 / 颜色；撤销重做命令栈；保存 / 另存为
@@ -66,6 +69,13 @@ HATCH / DIMENSION 做简化显示；其余在导入报告中计数说明。
 └────────────────────────────────────────────────────────────┘
 ```
 
+**界面主题**：**默认深色（黑底）**，可在「视图 → 主题设置」或底部命令栏输入
+`THEME` 切换为原有的浅色主题。切换会同时改变窗体配色与画布底色，选择保存在
+本机 INI 配置文件中（无账号、无云同步、无遥测），下次启动自动生效。
+「视图 → 黑底 / 白底」按钮仍可单独反转画布底色而不改动整体主题。
+配色集中在 `src/ilovecad/theme.py`，`.ui` 文件只保留布局属性，因此手工改
+`.ui` 不会被样式覆盖。PDF 输出始终为白底纸张，不受界面主题影响。
+
 ## 目录结构
 
 ```
@@ -75,6 +85,8 @@ src/ilovecad/
   render/     DisplayList + Qt 屏幕绘制 + 独立 PDF 绘制路径
   tools/      捕捉、测量、编辑命令与撤销重做栈
   ui/         Qt Designer .ui 源文件、画布控件、窗口控制器
+  theme.py    深色 / 浅色主题配色与本机设置持久化
+  fonts.py    统一的中文 fallback 字体策略
   app.py      入口
 scripts/
   fetch_libredwg.py      下载并校验锁定版本的 LibreDWG（含对应源码）
@@ -106,6 +118,7 @@ src/ilovecad/ui/main_window.ui
 src/ilovecad/ui/pdf_export.ui
 src/ilovecad/ui/import_report.ui
 src/ilovecad/ui/about.ui
+src/ilovecad/ui/settings.ui
 ```
 
 用 `pyside6-designer` 打开修改，保存后执行 `python scripts/compile_ui.py`
@@ -121,11 +134,13 @@ python scripts/selftest.py
 ILOVECAD_HIGH_VERSION_SAMPLE=/path/to/example_2018.dwg python scripts/selftest.py
 ```
 
-自检会串起完整链路：文档模型 → AC1018 DXF → `dwgwrite --as r2004` → 文件头
-校验 → 回读实体数与类型一致 → DisplayList → 独立矢量 PDF → 离屏主窗口截图 →
-高版本源头降版本。脚本默认用 Qt 的 `offscreen` 平台以便无桌面运行；该平台在
-Windows 上不注册系统字体，截图文字会显示为方框，真实 `windows` 平台显示正常
-（可用 `QT_QPA_PLATFORM=windows` 覆盖）。
+自检会串起完整链路：夹角计算（三点 90° / 45°、两线 90°、退化点拒绝）→
+文档模型 → AC1018 DXF → `dwgwrite --as r2004` → 文件头校验 → 回读实体数与类型
+一致 → DisplayList → 独立矢量 PDF → 默认深色主题校验 → 深色 / 浅色离屏截图 →
+高版本源头降版本。脚本用 `persist=False` 切换主题，不会改动你保存的选择。
+脚本默认用 Qt 的 `offscreen` 平台以便无桌面运行；该平台在 Windows 上不注册
+系统字体，截图文字会显示为方框，真实 `windows` 平台显示正常（可用
+`QT_QPA_PLATFORM=windows` 覆盖）。
 
 ## 版本策略
 

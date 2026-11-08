@@ -9,9 +9,8 @@
   <property name="windowTitle">
    <string>IloveCAD — 2D 图纸查看与轻量编辑</string>
   </property>
-  <property name="styleSheet">
-   <string notr="true">QMainWindow{background:#f5f6f8;} QToolButton{min-width:74px;padding:4px;border:1px solid transparent;border-radius:4px;} QToolButton:hover{background:#e8eef8;border:1px solid #b9cbe4;} QTabWidget::pane{border:0;border-top:1px solid #d7dce4;} QTreeWidget,QListWidget,QTextBrowser{background:#ffffff;border:1px solid #d7dce4;}</string>
-  </property>
+  <!-- Colours deliberately live in src/ilovecad/theme.py so the dark / light
+       setting can be switched at runtime. Layout-only properties stay here. -->
   <widget class="QWidget" name="centralwidget">
    <layout class="QVBoxLayout" name="rootLayout">
     <property name="spacing"><number>2</number></property>
@@ -42,7 +41,8 @@
         <item><widget class="QToolButton" name="btnZoomOut"><property name="text"><string>缩小</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnZoomWindow"><property name="text"><string>窗口缩放</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnPan"><property name="text"><string>平移</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
-        <item><widget class="QToolButton" name="btnDark"><property name="text"><string>黑底 / 白底</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDark"><property name="text"><string>黑底 / 白底</string></property><property name="toolTip"><string>仅切换画布背景色；整体界面主题请在「主题设置」中修改</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnThemeSettings"><property name="text"><string>主题设置</string></property><property name="toolTip"><string>深色（默认） / 浅色界面主题，选择保存在本机</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerView"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
       </widget>
@@ -78,6 +78,8 @@
         <item><widget class="QToolButton" name="btnMeasureChain"><property name="text"><string>累计长度</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnMeasureArea"><property name="text"><string>测面积</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnMeasureRadius"><property name="text"><string>半径 / 直径</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMeasureAngle"><property name="text"><string>测夹角(三点)</string></property><property name="toolTip"><string>顶点 → 第一边点 → 第二边点，显示夹角与补角</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnMeasureAngleLines"><property name="text"><string>测夹角(两线)</string></property><property name="toolTip"><string>点取两条直线 / 多段线，自动求夹角</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnMeasureClear"><property name="text"><string>清除结果</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerMeasure"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
@@ -138,9 +140,9 @@
   <widget class="QMenuBar" name="menubar">
    <property name="geometry"><rect><x>0</x><y>0</y><width>1440</width><height>26</height></rect></property>
    <widget class="QMenu" name="menuFile"><property name="title"><string>文件(&amp;F)</string></property><addaction name="actOpen"/><addaction name="actSave"/><addaction name="actSaveAs"/><addaction name="separator"/><addaction name="actExportPdf"/><addaction name="actExportDxf"/><addaction name="separator"/><addaction name="actQuit"/></widget>
-   <widget class="QMenu" name="menuView"><property name="title"><string>视图(&amp;V)</string></property><addaction name="actFit"/><addaction name="actZoomIn"/><addaction name="actZoomOut"/></widget>
+   <widget class="QMenu" name="menuView"><property name="title"><string>视图(&amp;V)</string></property><addaction name="actFit"/><addaction name="actZoomIn"/><addaction name="actZoomOut"/><addaction name="separator"/><addaction name="actThemeSettings"/></widget>
    <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/></widget>
-   <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/></widget>
+   <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/><addaction name="actMeasureAngle"/><addaction name="actMeasureAngleLines"/></widget>
    <widget class="QMenu" name="menuHelp"><property name="title"><string>帮助(&amp;H)</string></property><addaction name="actAbout"/></widget>
    <addaction name="menuFile"/><addaction name="menuView"/><addaction name="menuEdit"/><addaction name="menuMeasure"/><addaction name="menuHelp"/>
   </widget>
@@ -159,6 +161,9 @@
   <action name="actDelete"><property name="text"><string>删除</string></property><property name="shortcut"><string>Delete</string></property></action>
   <action name="actMeasureDistance"><property name="text"><string>测距离</string></property><property name="shortcut"><string>DI</string></property></action>
   <action name="actMeasureArea"><property name="text"><string>测面积</string></property></action>
+  <action name="actMeasureAngle"><property name="text"><string>测夹角（三点）</string></property><property name="shortcut"><string>ANG</string></property></action>
+  <action name="actMeasureAngleLines"><property name="text"><string>测夹角（两条线）</string></property></action>
+  <action name="actThemeSettings"><property name="text"><string>界面主题设置…</string></property></action>
   <action name="actAbout"><property name="text"><string>关于 IloveCAD</string></property></action>
  </widget>
  <customwidgets>

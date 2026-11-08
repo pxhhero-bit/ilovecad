@@ -29,6 +29,8 @@ MODE_HINTS = {
     "chain": "累计长度：连续点取折线点，双击或回车结束。",
     "area": "测面积：点取闭合多边形顶点，双击或回车结束。",
     "radius": "半径 / 直径：点取圆或圆弧。",
+    "angle": "测夹角（三点）：依次点取顶点、第一条边上的点、第二条边上的点。",
+    "angle_lines": "测夹角（两线）：依次点取两条直线 / 多段线，自动求较小夹角与补角。",
     "draw_line": "直线：点取起点和终点。",
     "draw_polyline": "多段线：连续点取顶点，双击或回车结束。",
     "draw_rect": "矩形：点取两个对角点。",
@@ -60,6 +62,7 @@ class CadCanvas(QWidget):
         self.mode = "select"
         self.current_layer = "0"
         self.points: list[Point] = []
+        self._angle_entities: list[Entity] = []
         self.cursor_model: Point | None = None
         self.cursor_screen: QPointF | None = None
         self.snap_result: snapping.SnapResult | None = None
@@ -84,6 +87,7 @@ class CadCanvas(QWidget):
         self.doc = doc
         self.undo_stack.set_document(doc)
         self.points.clear()
+        self._angle_entities.clear()
         self.mode = "select"
         self.current_layer = "0" if "0" in doc.layers else next(iter(doc.layers), "0")
         self.view.fit(doc.bounds())
@@ -105,6 +109,7 @@ class CadCanvas(QWidget):
             return
         self.mode = mode
         self.points.clear()
+        self._angle_entities.clear()
         self._rubber = None
         if mode == "delete":
             self.delete_selected()
@@ -135,10 +140,14 @@ class CadCanvas(QWidget):
         self.view.zoom(0.8)
         self.update()
 
-    def toggle_dark(self) -> bool:
-        self.dark = not self.dark
+    def set_dark(self, value: bool) -> bool:
+        """Set the canvas background explicitly (driven by the app theme)."""
+        self.dark = bool(value)
         self.invalidate()
         return self.dark
+
+    def toggle_dark(self) -> bool:
+        return self.set_dark(not self.dark)
 
     def toggle_snap(self) -> bool:
         self.snap_enabled = not self.snap_enabled
@@ -460,6 +469,33 @@ class CadCanvas(QWidget):
                     self._emit_measure(result)
             else:
                 self.statusMessage.emit("请点取圆或圆弧")
+        elif m == "angle":
+            self.points.append(q)
+            if len(self.points) == 3:
+                result = measure.angle_three_points(self.doc, *self.points)
+                if result:
+                    self._emit_measure(result)
+                else:
+                    self.statusMessage.emit("点与顶点重合，无法计算夹角")
+                self.points.clear()
+        elif m == "angle_lines":
+            ent = snapping.nearest_entity(
+                self.doc, q, 12.0 / max(self.view.scale, 1e-9))
+            if not ent or not ent.segments():
+                self.statusMessage.emit("请点取直线 / 多段线等线段对象")
+            else:
+                self._angle_entities.append(ent)
+                if len(self._angle_entities) == 1:
+                    self.statusMessage.emit(
+                        f"已选第一条线（{ent.kind}），请点取第二条线")
+                else:
+                    result = measure.angle_between_lines(
+                        self.doc, *self._angle_entities[:2])
+                    self._angle_entities.clear()
+                    if result:
+                        self._emit_measure(result)
+                    else:
+                        self.statusMessage.emit("所选对象没有有效线段")
         elif m == "draw_line":
             self.points.append(q)
             if len(self.points) == 2:
@@ -565,6 +601,7 @@ class CadCanvas(QWidget):
             self._finish_points()
             return
         self.points.clear()
+        self._angle_entities.clear()
         self._rubber = None
         self._window_selecting = False
         if self.mode != "select":

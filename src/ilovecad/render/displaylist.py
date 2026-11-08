@@ -74,17 +74,28 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
 
     if include_measurements:
         for m in doc.measurements:
-            pts = [tuple(p) for p in m.get("points", [])]
+            # Angle measurements supply several strokes (two arms plus an arc);
+            # older measurement kinds keep a single legacy "points" polyline.
+            sequences = m.get("paths") or [m.get("points", [])]
+            all_points: list[Point] = []
             acolor = (220, 60, 40) if not monochrome else (0, 0, 0)
-            if len(pts) >= 2:
-                dl.paths.append(PaintPath(points=pts, color=acolor,
-                                          width=_annotation_width(doc),
-                                          closed=bool(m.get("closed")),
-                                          annotation=True))
+            for idx, seq in enumerate(sequences):
+                pts = [tuple(p) for p in seq]
+                if len(pts) < 2:
+                    continue
+                all_points.extend(pts)
+                dl.paths.append(PaintPath(
+                    points=pts, color=acolor, width=_annotation_width(doc),
+                    closed=bool(m.get("closed")) if len(sequences) == 1 else False,
+                    annotation=True))
             label = str(m.get("label", ""))
-            if label and pts:
-                cx = sum(p[0] for p in pts) / len(pts)
-                cy = sum(p[1] for p in pts) / len(pts)
+            if label and all_points:
+                anchor = m.get("label_at")
+                if anchor:
+                    cx, cy = float(anchor[0]), float(anchor[1])
+                else:
+                    cx = sum(p[0] for p in all_points) / len(all_points)
+                    cy = sum(p[1] for p in all_points) / len(all_points)
                 dl.texts.append(PaintText(pos=(cx, cy), text=label,
                                           height=_annotation_height(doc),
                                           color=acolor, annotation=True))

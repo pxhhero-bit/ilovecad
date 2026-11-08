@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from . import APP_NAME, APP_VERSION
 from .fonts import ui_font
+from .theme import apply_theme, load_theme
 from .ui.main_window import MainWindow
 
 
@@ -19,6 +20,7 @@ def main(argv: list[str] | None = None) -> int:
     app.setOrganizationName("IloveCAD")
     app.setStyle("Fusion")
     app.setFont(ui_font())
+    apply_theme(load_theme(), app)
     window = MainWindow()
     window.show()
     return app.exec()

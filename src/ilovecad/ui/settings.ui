@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<ui version="4.0">
+ <class>SettingsDialog</class>
+ <widget class="QDialog" name="SettingsDialog">
+  <property name="windowTitle"><string>界面主题设置</string></property>
+  <property name="geometry"><rect><x>0</x><y>0</y><width>460</width><height>300</height></rect></property>
+  <layout class="QVBoxLayout" name="vbox">
+   <item>
+    <widget class="QGroupBox" name="groupTheme">
+     <property name="title"><string>界面主题</string></property>
+     <layout class="QVBoxLayout" name="vboxTheme">
+      <item><widget class="QRadioButton" name="radioDark"><property name="text"><string>深色主题（默认，黑色画布）</string></property><property name="checked"><bool>true</bool></property></widget></item>
+      <item><widget class="QRadioButton" name="radioLight"><property name="text"><string>浅色主题（原有的白色画布）</string></property></widget></item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelNote">
+     <property name="text"><string>切换主题会同时改变窗体配色与画布底色。「视图 → 黑底 / 白底」按钮可单独反转画布底色，不会改动主题设置。PDF 输出始终使用白底纸张，不受界面主题影响。</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="labelPrivacy">
+     <property name="text"><string>选择仅保存在本机配置文件中。纯净版：无账号、无云同步、无遥测、无广告、无会员与订阅。</string></property>
+     <property name="wordWrap"><bool>true</bool></property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation"><enum>Qt::Horizontal</enum></property>
+     <property name="standardButtons"><enum>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</enum></property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -21,6 +21,7 @@ UI_CLASSES = {
     "pdf_export": "Ui_PdfExportDialog",
     "import_report": "Ui_ImportReportDialog",
     "about": "Ui_AboutDialog",
+    "settings": "Ui_SettingsDialog",
 }
 
 
