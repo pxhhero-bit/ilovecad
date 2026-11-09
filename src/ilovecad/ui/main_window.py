@@ -19,8 +19,10 @@ from ..model import layer_ops
 from ..model.document import DwgDocument
 from ..model.session import (DocumentSession, empty_session, sha256_file)
 from ..preferences import (DEFAULT_PRECISION, DEFAULT_UNITS, UNITS_CHOICES,
-                           load_units_precision, save_snap_config,
-                           save_units_precision, sanitize_units_precision)
+                           load_text_settings, load_units_precision,
+                           save_snap_config, save_text_settings,
+                           save_units_precision, sanitize_text_settings,
+                           sanitize_units_precision)
 from ..render.displaylist import build
 from ..render.pdf import PdfOptions, PdfRenderer
 from ..theme import apply_theme, is_dark, label as theme_label, load_theme, save_theme
@@ -99,7 +101,8 @@ class SettingsDialog(QDialog):
 
     def __init__(self, current_theme: str, snap_config: SnapConfig | None = None,
                  parent=None, *, units: int = DEFAULT_UNITS,
-                 precision: int = DEFAULT_PRECISION):
+                 precision: int = DEFAULT_PRECISION,
+                 text_mode: str = "auto", text_scale: float = 1.0):
         super().__init__(parent)
         self.ui = load_ui(self, "settings")
         _localize_button_box(self.ui.buttonBox)
@@ -115,8 +118,17 @@ class SettingsDialog(QDialog):
         self._load_units(units, precision)
         self.ui.btnUnitsDefaults.clicked.connect(
             lambda: self._load_units(DEFAULT_UNITS, DEFAULT_PRECISION))
+        self._load_text(text_mode, text_scale)
+        self.ui.btnTextDefaults.clicked.connect(
+            lambda: self._load_text("auto", 1.0))
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
+
+    def _load_text(self, mode: str, scale: float) -> None:
+        mode, scale = sanitize_text_settings(mode, scale)
+        self.ui.radioTextAuto.setChecked(mode == "auto")
+        self.ui.radioTextExact.setChecked(mode == "exact")
+        self.ui.spinTextScale.setValue(int(round(scale * 100)))
 
     def _load_units(self, units: int, precision: int) -> None:
         code, places = sanitize_units_precision(units, precision)
@@ -143,6 +155,9 @@ class SettingsDialog(QDialog):
     def show_units_page(self) -> None:
         self.ui.tabSettings.setCurrentWidget(self.ui.tabUnits)
 
+    def show_text_page(self) -> None:
+        self.ui.tabSettings.setCurrentWidget(self.ui.tabText)
+
     def theme(self) -> str:
         return "light" if self.ui.radioLight.isChecked() else "dark"
 
@@ -156,6 +171,10 @@ class SettingsDialog(QDialog):
     def units_precision(self) -> tuple[int, int]:
         code = self.ui.comboUnits.currentData()
         return sanitize_units_precision(code, self.ui.spinPrecision.value())
+
+    def text_settings(self) -> tuple[str, float]:
+        mode = "exact" if self.ui.radioTextExact.isChecked() else "auto"
+        return sanitize_text_settings(mode, self.ui.spinTextScale.value() / 100.0)
 
 
 # Older callers (and the command alias) still use the original name.
@@ -213,6 +232,9 @@ class MainWindow(QMainWindow):
         self._snap_kind = ""
         self.units, self.precision = load_units_precision()
         self.doc.units, self.doc.precision = self.units, self.precision
+        self.text_mode, self.text_scale = load_text_settings()
+        self.doc.text_height_mode = self.text_mode
+        self.doc.text_scale = self.text_scale
 
         self.canvas = self.ui.canvas
         self.canvas.set_document(self.doc)
@@ -365,6 +387,7 @@ class MainWindow(QMainWindow):
             "actMeasureAngleLines": lambda: c.set_mode("angle_lines"),
             "actThemeSettings": self._open_theme_settings,
             "actSnapSettings": self._open_snap_settings,
+            "actTextSettings": self._open_text_settings,
             "actUnitsSettings": self._open_units_settings,
             "actLayerManager": self.open_layer_manager,
             "actMirror": lambda: self._need_selection("mirror"),
@@ -436,6 +459,7 @@ class MainWindow(QMainWindow):
         # doc.units drives measurement / PDF display; source_units keeps the
         # drawing's own $INSUNITS so saving never silently relabels it.
         doc.units, doc.precision = self.units, self.precision
+        doc.text_height_mode, doc.text_scale = self.text_mode, self.text_scale
         self.current_path = path
         self.canvas.set_document(doc)
         self._apply_mode_state()          # read-only gate before any interaction
@@ -1079,6 +1103,7 @@ class MainWindow(QMainWindow):
             "      锁定图层仍可见可捕捉，但不能被选中编辑\n"
             "测量：DI / DIST、CHAIN、AREA、R、ANG / DAN（三点夹角）、AL / ANGLELINE（两线夹角）\n"
             "设置：THEME / SETTINGS / OP 主题与对象捕捉；OSNAP 捕捉页；UNITS 单位与精度页\n"
+            "      STYLE / FONT 文字与字体页（字高原样 1:1 或自适应、显示倍率）\n"
             "帮助：HELP / ? 显示本说明\n"
             "\n测量结果列表：单击高亮，双击定位，右键可删除单条 / 复制数值 / 导出 CSV。\n"
             "鼠标：滚轮缩放，中键或「平移」模式左键拖动平移，Esc 取消当前命令。\n")
@@ -1124,6 +1149,9 @@ class MainWindow(QMainWindow):
             return
         if cmd in ("UNITS", "DDUNITS", "UN"):
             self._open_units_settings()
+            return
+        if cmd in ("STYLE", "FONT", "TEXTSET", "FONTS"):
+            self._open_settings(text_page=True)
             return
         if cmd in ("LA", "LAYER", "LAYERS", "LM"):
             self.open_layer_manager()
@@ -1217,13 +1245,17 @@ class MainWindow(QMainWindow):
 
     # --------------------------------------------------------------- settings
     def _open_settings(self, snap_page: bool = False,
-                       units_page: bool = False):
+                       units_page: bool = False, text_page: bool = False):
         dlg = SettingsDialog(self.theme, self.canvas.snap_config, self,
-                             units=self.units, precision=self.precision)
+                             units=self.units, precision=self.precision,
+                             text_mode=self.text_mode,
+                             text_scale=self.text_scale)
         if snap_page:
             dlg.show_snap_page()
         if units_page:
             dlg.show_units_page()
+        if text_page:
+            dlg.show_text_page()
         if dlg.exec() != QDialog.Accepted:
             return
         new_theme = dlg.theme()
@@ -1233,10 +1265,21 @@ class MainWindow(QMainWindow):
         units, precision = dlg.units_precision()
         if (units, precision) != (self.units, self.precision):
             self.set_units_precision(units, precision)
+        new_mode, new_scale = dlg.text_settings()
+        if (new_mode, new_scale) != (self.text_mode, self.text_scale):
+            self.text_mode, self.text_scale = save_text_settings(
+                new_mode, new_scale) if self._persist_snapping else (
+                    new_mode, new_scale)
+            self.doc.text_height_mode = self.text_mode
+            self.doc.text_scale = self.text_scale
+            self.canvas.fit_view()
+            self.canvas.invalidate()
         self._status(f"设置已保存：{theme_label(self.theme)}｜"
                      f"对象捕捉{'开' if self.canvas.snap_enabled else '关'}"
                      f"｜半径 {self.canvas.snap_config.radius_px:g} px｜"
-                     f"{g.UNIT_LABELS.get(self.units, '单位')} · {self.precision} 位")
+                     f"{g.UNIT_LABELS.get(self.units, '单位')} · {self.precision} 位"
+                     f"｜文字 {'原样 1:1' if self.text_mode == 'exact' else '自适应'}"
+                     f" · {self.text_scale * 100:g}%")
 
     def _open_theme_settings(self):
         self._open_settings()
@@ -1246,6 +1289,9 @@ class MainWindow(QMainWindow):
 
     def _open_units_settings(self):
         self._open_settings(units_page=True)
+
+    def _open_text_settings(self):
+        self._open_settings(text_page=True)
 
     def _toggle_dark(self):
         dark = self.canvas.toggle_dark()

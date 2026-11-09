@@ -15,6 +15,8 @@ _KEY_RADIUS = "snapping/radius_px"
 _KEY_MODE = "snapping/mode/"
 _KEY_UNITS = "measurement/units"
 _KEY_PRECISION = "measurement/precision"
+_KEY_TEXT_MODE = "text/height_mode"
+_KEY_TEXT_SCALE = "text/display_scale"
 
 # $INSUNITS codes with a known millimetre conversion (see geometry.UNIT_MM).
 UNITS_CHOICES = (
@@ -108,3 +110,34 @@ def save_units_precision(units: int, precision: int) -> tuple[int, int]:
     except Exception:
         pass
     return u, p
+
+
+def sanitize_text_settings(mode, scale) -> tuple[str, float]:
+    m = "exact" if str(mode).strip().lower() in ("exact", "原样", "1:1") else "auto"
+    try:
+        v = float(scale)
+    except (TypeError, ValueError):
+        v = 1.0
+    return m, max(0.25, min(3.0, v))
+
+
+def load_text_settings() -> tuple[str, float]:
+    try:
+        s = _settings()
+        return sanitize_text_settings(
+            s.value(_KEY_TEXT_MODE, "auto"),
+            s.value(_KEY_TEXT_SCALE, 1.0))
+    except Exception:
+        return "auto", 1.0
+
+
+def save_text_settings(mode, scale) -> tuple[str, float]:
+    m, v = sanitize_text_settings(mode, scale)
+    try:
+        s = _settings()
+        s.setValue(_KEY_TEXT_MODE, m)
+        s.setValue(_KEY_TEXT_SCALE, v)
+        s.sync()
+    except Exception:
+        pass
+    return m, v

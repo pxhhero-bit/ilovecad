@@ -179,7 +179,8 @@ class Entity:
                   "insertion": "插入点", "node": "点"}
         return [(p, labels.get(kind, kind)) for p, kind in self.snap_candidates()]
 
-    def bounds(self, height_cap: float | None = None):
+    def bounds(self, height_cap: float | None = None,
+               height_scale: float = 1.0):
         b = None
         for pts, _ in self.polylines():
             b = g.expand_bounds(b, g.bounds_of(pts))
@@ -191,36 +192,39 @@ class Entity:
             h = float(self.data.get("height", 2.5)) or 2.5
             if h <= 1e-6:          # zero-height placeholder attributes
                 return b
-            if height_cap and height_cap > 0:
-                h = min(h, height_cap)
-            # Group 41 of TEXT is a RELATIVE width factor; group 41 of MTEXT
-            # is a column width in drawing units. Neither may be extrapolated
-            # into a tens-of-thousands-of-units wide phantom bounding box.
-            factor = float(self.data.get("width_factor",
-                                         self.data.get("width", 1.0)) or 1.0)
+            h = g.adaptive_text_height(
+                h * float(self.data.get("height_scale", 1.0) or 1.0),
+                height_cap) * height_scale
+            # TEXT group 41 / STYLE width is a RELATIVE width factor; MTEXT
+            # group 41 is a reference-rectangle width in text-height units.
+            # Neither may be extrapolated into a phantom bounding box tens of
+            # thousands of units wide (that wrecks zoom extents and PDF scale).
+            factor = float(self.data.get("width_factor", 1.0) or 1.0)
+            factor *= float(self.data.get("width_scale", 1.0) or 1.0)
             factor = max(0.1, min(factor, 5.0))
+            column_chars = float(self.data.get("column_chars", 0.0) or 0.0)
+            if column_chars > 0:
+                lines = g.wrap_text_lines(lines, max(1, int(column_chars)))
             char_count = max(1, min(max(len(ln.strip()) for ln in lines), 200))
             w = char_count * h * 0.6 * factor
-            column = float(self.data.get("column_width", 0.0) or 0.0)
-            if column > h:
-                w = min(w, column)
+            if column_chars > 0:
+                w = min(w, column_chars * h * factor)
             w = min(w, h * 400.0)
+            line_spacing = max(0.5, min(3.0,
+                float(self.data.get("line_spacing", 1.0) or 1.0)))
             n = max(1, min(len(lines), 60))
-            total_h = n * h * 1.25
-            attach = int(self.data.get("align", 1) or 1)
+            total_h = n * h * 1.25 * line_spacing
+            attach = max(1, min(9, int(self.data.get("align", 1) or 1)))
             hpos = (attach - 1) % 3          # 0 left, 1 centre, 2 right
             x0 = p[0] - (w / 2 if hpos == 1 else w if hpos == 2 else 0.0)
             x1 = x0 + w
-            if self.data.get("mtext"):
-                vpos = (attach - 1) // 3      # 0 top, 1 middle, 2 bottom
-                if vpos == 0:
-                    y0, y1 = p[1] - total_h, p[1] + 0.3 * h
-                elif vpos == 1:
-                    y0, y1 = p[1] - total_h / 2, p[1] + total_h / 2
-                else:
-                    y0, y1 = p[1] - 0.3 * h, p[1] + total_h
+            vpos = (attach - 1) // 3          # 0 top, 1 middle, 2 bottom
+            if vpos == 0:
+                y0, y1 = p[1] - total_h, p[1] + 0.3 * h
+            elif vpos == 1:
+                y0, y1 = p[1] - total_h / 2, p[1] + total_h / 2
             else:
-                y0, y1 = p[1] - h, p[1] + h
+                y0, y1 = p[1] - 0.3 * h, p[1] + total_h
             b = g.expand_bounds(b, (x0, y0, x1, y1))
         return b
 

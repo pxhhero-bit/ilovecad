@@ -137,17 +137,21 @@ class PdfRenderer:
                 continue
             dev = transform.map(QPointF(item.pos[0], item.pos[1]))
             size_px = max(4, min(800, int(item.height * s)))
-            font = drawing_font(pixel_size=size_px)
+            font = drawing_font(pixel_size=size_px,
+                                families=item.families or None,
+                                bold=item.bold, italic=item.italic,
+                                underline=item.underline,
+                                strikeout=item.strikeout)
             painter.setFont(font)
             fm = QFontMetrics(font)
             r, gg, bb = item.color
             painter.setPen(QColor(0, 0, 0) if options.monochrome else
                            (QColor(220, 60, 40) if item.annotation else QColor(r, gg, bb)))
-            line_h = size_px * 1.25
+            line_h = size_px * 1.25 * item.line_spacing
             n = len(lines)
-            hpos = ((item.align - 1) % 3) if item.mtext else 0
-            if item.mtext and n > 1:
-                vpos = (item.align - 1) // 3
+            hpos = (item.align - 1) % 3
+            vpos = (item.align - 1) // 3
+            if n > 1:
                 if vpos == 0:
                     y0 = size_px * 0.85
                 elif vpos == 1:
@@ -163,6 +167,10 @@ class PdfRenderer:
                 painter.translate(dev)
                 if item.rotation:
                     painter.rotate(-item.rotation)
+                if abs(item.width_scale - 1.0) > 1e-3:
+                    painter.scale(item.width_scale, 1.0)
+                if abs(item.oblique) > 0.5:
+                    painter.shear(math.tan(math.radians(item.oblique)), 0.0)
                 painter.drawText(QPointF(x, y0 + i * line_h), line)
                 painter.restore()
 

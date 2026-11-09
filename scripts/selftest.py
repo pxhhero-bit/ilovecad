@@ -230,7 +230,7 @@ def redteam_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     assert hasattr(lm.ui, "layerTable")
     lm.close()
     sd = SettingsDialog(probe.theme, probe.canvas.snap_config, probe)
-    assert sd.ui.tabSettings.count() == 3
+    assert sd.ui.tabSettings.count() == 4
     units, precision = sd.units_precision()
     assert isinstance(units, int) and isinstance(precision, int)
     sd.close()
@@ -343,6 +343,51 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
         "技术要求：", "1 辊筒面高于机架面10mm", "2 辊筒采用直径76*4"]
     checks["mtext_cleanup"] = True
 
+    step("渲染回归：STYLE 字型 / 内联格式码 / 字体映射 / 宽度与对齐")
+    from ilovecad.fonts import font_families, normalize_font_name
+    assert normalize_font_name(r"C:\FONTS\SimHei.ttf") == "simhei"
+    fam = font_families("isocp.shx", "hztxt.shx", "SimHei")
+    assert fam[0] in ("SimHei", "黑体") and "SimSun" in fam, fam
+    assert font_families("KaiTi")[0] in ("KaiTi", "楷体")
+    assert font_families("HYSWLongFangSong")[0] in ("FangSong", "仿宋")
+    assert font_families("", "", "", "PDF 汉仪长仿宋体")[0] in ("FangSong", "仿宋")
+    fmt = g.parse_mtext_format(
+        r"{\fSimHei|b1|i1|c134|p49;\H0.8333x;\W1.4;\Q12;\C3;文字}")
+    assert (fmt["inline_font"] == "SimHei" and fmt["bold"] and fmt["italic"]
+            and abs(fmt["height_scale"] - 0.8333) < 1e-3
+            and abs(fmt["width_scale"] - 1.4) < 1e-3
+            and fmt["oblique"] == 12 and fmt["color_index"] == 3), fmt
+    # STYLE table + zero-height TEXT must fall back to the style's last height,
+    # and TEXT group 11/21 must win as the alignment point.
+    style_pairs = [("0", "SECTION"), ("2", "TABLES"),
+                   ("0", "TABLE"), ("2", "STYLE"),
+                   ("0", "STYLE"), ("2", "HZ"), ("3", "isocp.shx"),
+                   ("4", "hztxt.shx"), ("40", "0.0"), ("41", "0.8"),
+                   ("42", "7.5"), ("50", "0.0"),
+                   ("0", "ENDTAB"), ("0", "ENDSEC"),
+                   ("0", "SECTION"), ("2", "ENTITIES"),
+                   ("0", "TEXT"), ("8", "0"), ("10", "1.0"), ("20", "2.0"),
+                   ("11", "9.0"), ("21", "8.0"), ("40", "0.0"),
+                   ("72", "1"), ("73", "0"), ("7", "HZ"), ("1", "样式文字"),
+                   ("0", "ENDSEC"), ("0", "EOF")]
+    styled, _ = parse_dxf(
+        "".join(f"{c}\n{v}\n" for c, v in style_pairs).encode("utf-8"))
+    t = styled.entities[0]
+    assert t.data["height"] == 7.5, "zero-height TEXT lost its STYLE fallback"
+    assert t.data["p"] == (9.0, 8.0), "TEXT alignment point was ignored"
+    assert abs(t.data["width_factor"] - 0.8) < 1e-9
+    assert t.data["font"] == "isocp.shx" and t.data["bigfont"] == "hztxt.shx"
+    sdl = build(styled)
+    assert abs(sdl.texts[0].width_scale - 0.8) < 1e-9
+    assert "SimSun" in sdl.texts[0].families
+    back_style, _ = parse_dxf(write_dxf(styled))
+    assert "HZ" in back_style.styles
+    assert back_style.styles["HZ"]["font"] == "isocp.shx"
+    assert back_style.styles["HZ"]["bigfont"] == "hztxt.shx"
+    checks["style_font_mapping"] = {"styles": len(styled.styles),
+                                    "families": sdl.texts[0].families[:3],
+                                    "roundtrip_styles": len(back_style.styles)}
+
     doc = DwgDocument()
     for i in range(60):
         doc.add(Entity(0, "LINE", "0", data={"a": (float(i), 0.0),
@@ -392,18 +437,32 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     checks["spline_nurbs"] = {"control": len(sp.data["control"]),
                               "evaluated": len(sp.data["pts"])}
 
-    step("渲染回归：超大字高只做显示限高，不改写源数据")
+    step("渲染回归：字高层级 / 原样 1:1 / 显示倍率 / 源文件字高不变")
     big = DwgDocument()
     for i in range(60):
         big.add(Entity(0, "LINE", "0", data={"a": (float(i), 0.0),
                                              "b": (float(i), 100.0)}))
     big.add(Entity(0, "TEXT", "0", data={"p": (0.0, 0.0), "text": "大标题",
                                          "height": 10000.0, "mtext": True}))
+    big.add(Entity(0, "TEXT", "0", data={"p": (0.0, -50.0), "text": "小标注",
+                                         "height": 2000.0, "mtext": True}))
     cap = big.text_height_cap()
     assert cap and cap < 10000
-    assert build(big).texts[0].height <= cap + 1e-6
-    assert big.entities[-1].data["height"] == 10000.0
+    auto = build(big)
+    heights = [t.height for t in auto.texts]
+    assert len(heights) == 2 and heights[0] > heights[1] > cap, \
+        "adaptive mode flattened the source type hierarchy"
+    assert auto.texts[0].source_height == 10000.0
+    assert big.entities[-2].data["height"] == 10000.0
+    big.text_height_mode = "exact"
+    exact = build(big)
+    assert exact.texts[0].height == 10000.0 and exact.texts[1].height == 2000.0
+    big.text_scale = 0.5
+    assert build(big).texts[0].height == 5000.0
+    big.text_scale = 1.0
+    big.text_height_mode = "auto"
     checks["text_height_cap"] = round(cap, 3)
+    checks["text_hierarchy"] = [round(h, 1) for h in heights]
 
     step("真实图纸：主体图幅视图 / 无格式码 / 无实心填充 / PDF 完整范围")
     real = Path(os.environ.get("ILOVECAD_REAL_DRAWING", ""))
@@ -429,6 +488,17 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
         splines = [e for e in d.entities if e.kind == "SPLINE"]
         assert splines and all(len(e.data["pts"]) >= len(e.data["control"])
                                for e in splines)
+        assert len(d.styles) >= 5, "STYLE table was not parsed"
+        families = {tuple(t.families[:1]) for t in rdl.texts}
+        heights = {round(t.height, 1) for t in rdl.texts}
+        assert len(families) >= 3, "all labels fell back to one font family"
+        assert len(heights) >= 8, "all labels were flattened to one size"
+        assert max(t.source_height for t in rdl.texts) > 1000
+        d.text_height_mode = "exact"
+        exact_dl = build(d)
+        assert any(t.height > 1000 for t in exact_dl.texts), \
+            "exact 1:1 text heights were still compressed"
+        d.text_height_mode = "auto"
         full_pdf = WORK / "render_full_extent.pdf"
         PdfRenderer.export(str(full_pdf), d, rdl,
                            PdfOptions(paper="A3", scope="完整范围"), None)
@@ -438,6 +508,8 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
             "fit_width": round(fit_bounds[2] - fit_bounds[0], 1),
             "ignored": ignored, "text_lines": len(all_lines),
             "hatch_paths": sum(1 for p in rdl.paths if p.kind == "HATCH"),
+            "styles": len(d.styles), "font_families": len(families),
+            "distinct_heights": len(heights),
             "full_extent_pdf_bytes": full_pdf.stat().st_size,
         }
     result["render"] = checks

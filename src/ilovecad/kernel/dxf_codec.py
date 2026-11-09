@@ -176,15 +176,19 @@ def _parse_entity(kind: str, groups) -> Entity | None:
     elif kind == "POINT":
         d = {"p": (_num(groups, "10"), _num(groups, "20"))}
     elif kind in ("TEXT", "MTEXT", "DIMENSION"):
-        if kind == "MTEXT":
-            # MTEXT splits long strings over repeated group 3 then a final group 1.
-            text = "".join(v for code, v in groups if code in ("3", "1"))
-        else:
-            text = _first(groups, "1", "") or ""
-        raw_height = abs(_num(groups, "40", 2.5))
-        height = raw_height if raw_height > 1e-6 else 0.0
         is_mtext = kind == "MTEXT"
         is_dim = kind == "DIMENSION"
+        if is_mtext:
+            raw_text = "".join(v for code, v in groups if code in ("3", "1"))
+        else:
+            raw_text = _first(groups, "1", "") or ""
+        fmt = g.parse_mtext_format(raw_text) if is_mtext else {}
+        style = _first(groups, "7", "Standard") or "Standard"
+        align = 1
+        raw_height = abs(_num(groups, "40", 0.0))
+        height = raw_height if raw_height > 1e-6 else 0.0
+        if fmt.get("absolute_height", 0.0) > 0:
+            height = fmt["absolute_height"]
         if is_dim:
             # Dimension lines / arrows live in an anonymous block (*D…); the
             # DIMENSION entity itself carries only a placeholder ("<>"). Never
@@ -192,21 +196,58 @@ def _parse_entity(kind: str, groups) -> Entity | None:
             p = (_num(groups, "11"), _num(groups, "21"))
             if not (p[0] or p[1]):
                 p = (_num(groups, "10"), _num(groups, "20"))
-            text = ""
-        else:
+            raw_text = ""
+        elif is_mtext:
+            # MTEXT group 11/21 is the X-axis direction vector, NOT a point.
             p = (_num(groups, "10"), _num(groups, "20"))
+            align = int(_num(groups, "71", 1)) or 1
+        else:
+            # TEXT group 11/21 is the alignment point when 72/73 are non-zero.
+            hjust = int(_num(groups, "72", 0))
+            vjust = int(_num(groups, "73", 0))
+            hpos = {0: 0, 1: 1, 2: 2, 3: 0, 4: 1, 5: 1}.get(hjust, 0)
+            vpos = {0: 2, 1: 2, 2: 1, 3: 0}.get(vjust, 2)
+            align = vpos * 3 + hpos + 1
+            p = (_num(groups, "10"), _num(groups, "20"))
+            if hjust or vjust:
+                ap = (_num(groups, "11"), _num(groups, "21"))
+                if ap[0] or ap[1]:
+                    p = ap
+        if is_mtext:
+            align = max(1, min(9, align))
+        # LibreDWG writes MTEXT group 41 as the reference-rectangle width in
+        # TEXT-HEIGHT units (e.g. 56.03 x a 162.8 height = one A3 sheet).
+        # TEXT group 41 is the relative width factor instead.
+        g41 = _num(groups, "41", 0.0)
+        width_factor = g41 if (not is_mtext and g41 > 0) else 0.0
+        column_chars = g41 if is_mtext else 0.0
+        line_spacing = _num(groups, "44", 1.0)
+        if line_spacing > 8 and height > 0:
+            line_spacing /= height
+        line_spacing = max(0.5, min(3.0, line_spacing or 1.0))
         d = {"p": p,
-             "text": g.decode_cad_text(text),
+             "text": g.decode_cad_text(raw_text),
              "height": height,
              "rotation": _num(groups, "50"),
-             "width": _num(groups, "41", 1.0) or 1.0 if not is_mtext else 1.0,
-             "width_factor": (_num(groups, "41", 1.0) or 1.0)
-                             if not is_mtext and not is_dim else 1.0,
-             "column_width": _num(groups, "41", 0.0) if is_mtext else 0.0,
-             "align": max(1, min(9, int(_num(groups, "71", 1)) or 1))
-                      if is_mtext else 1,
+             "style": style,
+             "width_factor": width_factor,
+             "width_scale": fmt.get("width_scale", 1.0),
+             "height_scale": fmt.get("height_scale", 1.0),
+             "oblique": fmt.get("oblique", 0.0) or _num(groups, "51", 0.0),
+             "color_index": fmt.get("color_index"),
+             "inline_font": fmt.get("inline_font", ""),
+             "bold": fmt.get("bold", False), "italic": fmt.get("italic", False),
+             "underline": fmt.get("underline", False),
+             "strikeout": fmt.get("strikeout", False),
+             "column_chars": column_chars,
+             "line_spacing": line_spacing,
+             "align": align,
              "mtext": is_mtext, "dimension": is_dim,
              "source_kind": kind}
+        if fmt.get("align") is not None and is_mtext:
+            # \A1 bottom / \A2 centre / \A3 top overrides the vertical part.
+            vert = {1: 2, 2: 1, 3: 0}.get(fmt["align"], 1)
+            d["align"] = vert * 3 + ((align - 1) % 3) + 1
         kind = {"MTEXT": "TEXT", "DIMENSION": "DIMENSION"}.get(kind, kind)
     elif kind == "SOLID":
         pts = [(_num(groups, "10"), _num(groups, "20")),
@@ -356,6 +397,18 @@ def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
                     lineweight=_num(groups, "370", 25.0) / 100.0,
                     visible=raw_color >= 0 and not (flags & 1),
                     frozen=bool(flags & 1), locked=bool(flags & 4))
+            elif section == "TABLES" and table == "STYLE" and typ == "STYLE":
+                # group 3 primary font, group 4 CJK bigfont, 40 fixed height,
+                # 41 width factor, 42 last height, 50 oblique angle.
+                name = _first(groups, "2", "Standard") or "Standard"
+                doc.styles[name] = {
+                    "font": _first(groups, "3", "") or "",
+                    "bigfont": _first(groups, "4", "") or "",
+                    "fixed_height": _num(groups, "40", 0.0),
+                    "width": _num(groups, "41", 1.0) or 1.0,
+                    "last_height": _num(groups, "42", 2.5),
+                    "oblique": _num(groups, "50", 0.0),
+                }
             elif section == "BLOCKS" and typ == "BLOCK":
                 block_name = _first(groups, "2", "") or ""
                 block_base[block_name] = (_num(groups, "10"), _num(groups, "20"))
@@ -446,6 +499,33 @@ def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
     if top_inserts:
         report["notes"].append(
             f"顶层块参照 {len(top_inserts)} 个已展开为 {report['block_expanded']} 个 2D 实体")
+
+    # Resolve every text entity's STYLE reference.  A zero group-40 height is
+    # common in LibreDWG output (dimension text, attribute placeholders); the
+    # style's fixed / last-used height is the only faithful fallback.  Group 41
+    # of a TEXT is a real width factor; when absent, inherit the style's width.
+    style_lookup = {k.lower(): v for k, v in doc.styles.items()}
+    for e in doc.entities:
+        if e.kind not in ("TEXT", "MTEXT", "DIMENSION"):
+            continue
+        d = e.data
+        st = style_lookup.get(str(d.get("style", "Standard")).lower(), {})
+        d["font"] = st.get("font", "")
+        d["bigfont"] = st.get("bigfont", "")
+        d["style_width"] = st.get("width", 1.0) or 1.0
+        d["style_oblique"] = st.get("oblique", 0.0)
+        if d.get("height", 0.0) <= 0:
+            d["height"] = (st.get("fixed_height", 0.0) or
+                           st.get("last_height", 0.0) or 2.5)
+        if not d.get("width_factor"):
+            d["width_factor"] = d["style_width"]
+        if not d.get("oblique"):
+            d["oblique"] = d.get("style_oblique", 0.0)
+    if doc.styles:
+        report["styles"] = len(doc.styles)
+        report["notes"].append(
+            f"已解析 {len(doc.styles)} 个文字样式；SHX 字型按最接近的本机"
+            "中文字体近似显示（黑体 / 宋体 / 楷体 / 仿宋 / ISO 单线体）")
 
     for idx, e in enumerate(doc.entities, start=1):
         e.eid = idx
@@ -581,6 +661,28 @@ def write_dxf(doc: DwgDocument, stats: dict | None = None) -> bytes:
             w.p(49, f"{seg:.6f}")
     w.p(0, "ENDTAB")
 
+    # Text styles carry the SHX / TrueType font names, width factor and
+    # fallback height.  Writing them back keeps font identity on a round trip
+    # instead of silently degrading every label to the same system font.
+    styles = doc.styles or {"Standard": {
+        "font": "txt.shx", "bigfont": "", "fixed_height": 0.0,
+        "width": 1.0, "last_height": 2.5, "oblique": 0.0}}
+    w.p(0, "TABLE"); w.p(2, "STYLE"); w.p(5, "4"); w.p(330, "0")
+    w.p(100, "AcDbSymbolTable"); w.p(70, len(styles))
+    for name, st in styles.items():
+        w.p(0, "STYLE"); w.p(5, H()); w.p(330, "4")
+        w.p(100, "AcDbSymbolTableRecord")
+        w.p(100, "AcDbTextStyleTableRecord")
+        w.p(2, name); w.p(70, 0)
+        w.p(40, f"{float(st.get('fixed_height', 0.0)):.6f}")
+        w.p(41, f"{float(st.get('width', 1.0) or 1.0):.6f}")
+        w.p(42, f"{float(st.get('last_height', 2.5)):.6f}")
+        w.p(50, f"{float(st.get('oblique', 0.0)):.6f}")
+        w.p(3, str(st.get("font", "") or "txt.shx"))
+        w.p(4, str(st.get("bigfont", "") or ""))
+        w.p(71, 0)
+    w.p(0, "ENDTAB")
+
     layers = sorted(doc.layers.values(), key=lambda l: l.name)
     w.p(0, "TABLE"); w.p(2, "LAYER"); w.p(5, "2"); w.p(330, "0")
     w.p(100, "AcDbSymbolTable"); w.p(70, len(layers))
@@ -692,10 +794,15 @@ def write_dxf(doc: DwgDocument, stats: dict | None = None) -> bytes:
             begin("POINT", e); w.xyz(*d["p"])
         elif k in ("TEXT", "MTEXT", "DIMENSION"):
             begin("TEXT", e); w.xyz(*d["p"])
+            # Always write the SOURCE height: viewer-side display scaling must
+            # never leak into a saved drawing.
             w.p(40, f"{d.get('height', 2.5):.6f}")
             w.p(1, _dxf_text(d.get("text", "")))
             w.p(50, f"{d.get('rotation', 0.0):.6f}")
-            w.p(7, "STANDARD")
+            w.p(41, f"{float(d.get('width_factor', 1.0) or 1.0):.6f}")
+            if d.get("oblique"):
+                w.p(51, f"{float(d['oblique']):.6f}")
+            w.p(7, str(d.get("style", "Standard") or "Standard"))
             converted(k, "TEXT")
         elif k == "SOLID":
             pts = list(d.get("pts", []))

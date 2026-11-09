@@ -104,8 +104,14 @@ class DwgDocument:
     source_units: int | None = None  # verbatim $INSUNITS from the source file
     precision: int = 4
     layers: dict[str, Layer] = field(default_factory=lambda: {"0": Layer("0")})
+    styles: dict[str, dict] = field(default_factory=dict)
     entities: list[Entity] = field(default_factory=list)
     measurements: list[dict] = field(default_factory=list)
+    # Local viewer-only text preferences. Neither value is ever written back
+    # to the source file: "exact" = source heights 1:1, "auto" = rank-preserving
+    # compression of pathologically large titles; text_scale is a user dial.
+    text_height_mode: str = "auto"
+    text_scale: float = 1.0
     skipped: Counter = field(default_factory=Counter)
     notes: list[str] = field(default_factory=list)
     _next_id: int = 1
@@ -179,21 +185,24 @@ class DwgDocument:
     def full_bounds(self):
         """Literal extents with the source (uncapped) text heights.
 
-        The viewer caps absurdly large sheet titles for display only; the DXF
-        header written back still describes the real text heights.
+        The viewer may compress oversized sheet titles for display only; the
+        DXF header written back still describes the real text heights.
         """
         b = None
         for e in self.entities:
-            b = g.expand_bounds(b, e.bounds(None))
+            b = g.expand_bounds(b, e.bounds(None, 1.0))
         return b
 
+    def _text_cap(self):
+        return self.text_height_cap() if self.text_height_mode != "exact" else None
+
     def bounds(self, only_visible: bool = False):
-        cap = self.text_height_cap()
+        cap = self._text_cap()
         b = None
         for e in self.entities:
             if only_visible and not self.visible(e):
                 continue
-            b = g.expand_bounds(b, e.bounds(cap))
+            b = g.expand_bounds(b, e.bounds(cap, self.text_scale))
         return b
 
     def robust_bounds(self, trim: float = 0.02):
@@ -205,16 +214,39 @@ class DwgDocument:
         cluster is used instead; FITALL / PDF「完整范围」still use
         :meth:`bounds` and therefore include every object.
         """
-        cap = self.text_height_cap()
+        cap = self._text_cap()
         items = []
         for e in self.entities:
-            b = e.bounds(cap)
+            b = e.bounds(cap, self.text_scale)
             if b:
                 items.append(b)
         full = None
         for b in items:
             full = g.expand_bounds(full, b)
         cluster, ignored, trimmed = _dominant_bounds(items, trim)
+        if trimmed and cluster:
+            # A title block usually sits below the dense geometry of the same
+            # sheet.  Its few text entities form no dense grid cell of their
+            # own, so the flood fill can leave them just outside the fit and
+            # cut the sheet title in half.  Pull back any text whose centre is
+            # inside the sheet's horizontal span and not absurdly far above /
+            # below it; the remote sheet at x~0 stays excluded.
+            x0, y0, x1, y1 = cluster
+            w, h = x1 - x0, y1 - y0
+            lo_y, hi_y = y0 - 1.5 * h, y1 + 1.5 * h
+            for e in self.entities:
+                if e.kind not in ("TEXT", "MTEXT", "DIMENSION"):
+                    continue
+                b = e.bounds(cap, self.text_scale)
+                if not b:
+                    continue
+                cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+                if (x0 - 0.1 * w <= cx <= x1 + 0.1 * w and
+                        lo_y <= cy <= hi_y):
+                    cluster = g.expand_bounds(cluster, b)
+            ignored = sum(1 for b in items
+                          if b[2] < cluster[0] or b[0] > cluster[2] or
+                          b[3] < cluster[1] or b[1] > cluster[3])
         return (cluster, ignored) if trimmed else (full, 0)
 
     def entity_count_by_kind(self) -> Counter:

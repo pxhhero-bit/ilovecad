@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 
 from ..model import geometry as g
 from ..model.document import DwgDocument
-from .colors import entity_color
+from ..fonts import font_families
+from .colors import aci_rgb, entity_color
 
 Point = tuple[float, float]
 
@@ -33,8 +34,17 @@ class PaintText:
     rotation: float = 0.0
     annotation: bool = False
     lines: list[str] = field(default_factory=list)
-    align: int = 1               # MTEXT attachment point 1..9
+    align: int = 1               # attachment point 1..9 (MTEXT 71 / TEXT 72+73)
     mtext: bool = False
+    families: list[str] = field(default_factory=list)
+    width_scale: float = 1.0
+    oblique: float = 0.0
+    line_spacing: float = 1.0
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    strikeout: bool = False
+    source_height: float = 0.0
 
 
 @dataclass
@@ -65,7 +75,8 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
           only_visible: bool = True,
           highlight_index: int | None = None) -> DisplayList:
     dl = DisplayList()
-    text_cap = doc.text_height_cap()
+    text_cap = (doc.text_height_cap() if doc.text_height_mode != "exact"
+                else None)
     for ent in doc.entities:
         if only_visible and not doc.visible(ent):
             continue
@@ -105,16 +116,38 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
         if ent.kind in ("TEXT", "MTEXT", "DIMENSION"):
             d = ent.data
             lines = g.visible_text_lines(str(d.get("text", "")))
-            height = float(d.get("height", 2.5)) or 0.0
+            column_chars = float(d.get("column_chars", 0.0) or 0.0)
+            if column_chars > 0 and lines:
+                lines = g.wrap_text_lines(lines, max(1, int(column_chars)))
+            source_height = float(d.get("height", 2.5)) or 0.0
+            height = g.adaptive_text_height(
+                source_height * float(d.get("height_scale", 1.0) or 1.0),
+                text_cap) * doc.text_scale
             if lines and height > 0:
-                if text_cap and text_cap > 0:
-                    height = min(height, text_cap)
+                text_color = color
+                override = d.get("color_index")
+                if override is not None and not monochrome:
+                    text_color = aci_rgb(int(override), dark)
                 dl.texts.append(PaintText(
                     pos=tuple(d.get("p", (0, 0))), text="\n".join(lines),
-                    height=height, color=color,
+                    height=height, color=text_color,
                     rotation=float(d.get("rotation", 0.0)),
-                    lines=lines, align=int(d.get("align", 1) or 1),
-                    mtext=bool(d.get("mtext"))))
+                    lines=lines, align=max(1, min(9, int(d.get("align", 1) or 1))),
+                    mtext=bool(d.get("mtext")),
+                    families=font_families(d.get("font", ""),
+                                           d.get("bigfont", ""),
+                                           d.get("inline_font", ""),
+                                           d.get("style", "")),
+                    width_scale=(float(d.get("width_factor", 1.0) or 1.0) *
+                                 float(d.get("width_scale", 1.0) or 1.0)),
+                    oblique=float(d.get("oblique", 0.0) or 0.0),
+                    line_spacing=max(0.5, min(3.0,
+                        float(d.get("line_spacing", 1.0) or 1.0))),
+                    bold=bool(d.get("bold", False)),
+                    italic=bool(d.get("italic", False)),
+                    underline=bool(d.get("underline", False)),
+                    strikeout=bool(d.get("strikeout", False)),
+                    source_height=source_height))
 
     if include_measurements:
         for index, m in enumerate(doc.measurements):

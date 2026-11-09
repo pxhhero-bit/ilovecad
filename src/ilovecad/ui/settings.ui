@@ -111,6 +111,38 @@
        <item><spacer name="spacerUnitsBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
       </layout>
      </widget>
+     <widget class="QWidget" name="tabText">
+      <attribute name="title"><string>文字与字体</string></attribute>
+      <layout class="QVBoxLayout" name="vboxText">
+       <item>
+        <widget class="QGroupBox" name="groupTextHeight">
+         <property name="title"><string>文字高度（源文件字高永不改写）</string></property>
+         <layout class="QVBoxLayout" name="vboxTextHeight">
+          <item><widget class="QRadioButton" name="radioTextAuto"><property name="text"><string>自适应（默认）：保留大小层级，仅压缩异常巨大的标题字</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item><widget class="QRadioButton" name="radioTextExact"><property name="text"><string>原样 1:1：完全按源图纸字高显示</string></property></widget></item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="groupTextScale">
+         <property name="title"><string>显示倍率</string></property>
+         <layout class="QHBoxLayout" name="layoutTextScale">
+          <item><widget class="QLabel" name="labelTextScale"><property name="text"><string>文字缩放：</string></property></widget></item>
+          <item><widget class="QSpinBox" name="spinTextScale"><property name="minimum"><number>25</number></property><property name="maximum"><number>300</number></property><property name="value"><number>100</number></property><property name="suffix"><string> %</string></property></widget></item>
+          <item><widget class="QPushButton" name="btnTextDefaults"><property name="text"><string>恢复默认</string></property></widget></item>
+          <item><spacer name="spacerTextScale"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="labelTextNote">
+         <property name="text"><string>读入时解析 STYLE 表的字体文件、大字体、宽度因子、倾斜角与固定字高，以及 TEXT / MTEXT 的字型、相对字高 \H、宽度 \W、颜色 \C、粗斜体与对齐点。SHX 字库不随软件分发，按最接近的本机中文字体近似（黑体 / 宋体 / 楷体 / 仿宋 / ISO 单线体）；屏幕、PDF 与保存的 R2004 文件均保留源字高，只有屏幕显示受此处设置影响。设置仅保存在本机 INI。</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+        </widget>
+       </item>
+       <item><spacer name="spacerTextBottom"><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>20</height></size></property></spacer></item>
+      </layout>
+     </widget>
     </widget>
    </item>
    <item>

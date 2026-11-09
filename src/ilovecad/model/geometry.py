@@ -276,6 +276,104 @@ def decode_cad_text(text: str) -> str:
 
 _FORMAT_MARKER = re.compile(
     r"\\U\+|\\P|\\p|\\[fFhHwWcCqQtTaA]|\{\\|%%[cdpCDP]|\\S|\|b\d|\\o\\l")
+_HEIGHT_RELATIVE = re.compile(r"\\H([0-9]*\.?[0-9]+)\s*x", re.IGNORECASE)
+_HEIGHT_ABSOLUTE = re.compile(r"\\H([0-9]*\.?[0-9]+)\s*;", re.IGNORECASE)
+_WIDTH_SCALE = re.compile(r"\\W([0-9]*\.?[0-9]+)", re.IGNORECASE)
+_OBLIQUE = re.compile(r"\\Q([-+0-9]*\.?[0-9]+)", re.IGNORECASE)
+_TRACKING = re.compile(r"\\T([0-9]*\.?[0-9]+)", re.IGNORECASE)
+_COLOR = re.compile(r"\\C([0-9]+)", re.IGNORECASE)
+_FONT = re.compile(r"\\[fF]([^;\\]*);")
+_ALIGN = re.compile(r"\\A([0-9]+)", re.IGNORECASE)
+
+
+def parse_mtext_format(raw: str) -> dict:
+    """Extract semantic MTEXT overrides BEFORE the printable text is stripped.
+
+    ``\\H0.8333x`` / ``\\W1.4`` / ``\\Q15`` / ``\\C4`` / ``\\fSimHei|b1|i0;``
+    carry the relative size, width, slant, colour, font family and bold /
+    italic state of a label.  Dropping them made every label look identical.
+    """
+    raw = str(raw or "")
+    out: dict = {"inline_font": "", "bold": False, "italic": False,
+                 "height_scale": 1.0, "absolute_height": 0.0,
+                 "width_scale": 1.0, "oblique": 0.0, "tracking": 1.0,
+                 "color_index": None, "underline": False,
+                 "strikeout": False, "align": None}
+    font_match = _FONT.search(raw)
+    if font_match:
+        parts = font_match.group(1).split("|")
+        out["inline_font"] = parts[0].strip()
+        for flag in parts[1:]:
+            flag = flag.strip().lower()
+            if flag.startswith("b") and flag[1:2] == "1":
+                out["bold"] = True
+            elif flag.startswith("i") and flag[1:2] == "1":
+                out["italic"] = True
+    rels = _HEIGHT_RELATIVE.findall(raw)
+    if rels:
+        # The LAST \H in force is the one that applies to the visible text
+        # (e.g. "\H1.5x;\fKaiTi…;\H0.8333x;技术要求").
+        out["height_scale"] = max(0.05, min(20.0, float(rels[-1])))
+    else:
+        absolute = _HEIGHT_ABSOLUTE.search(raw)
+        if absolute:
+            out["absolute_height"] = float(absolute.group(1))
+    widths = _WIDTH_SCALE.findall(raw)
+    if widths:
+        out["width_scale"] = max(0.05, min(20.0, float(widths[-1])))
+    oblique = _OBLIQUE.search(raw)
+    if oblique:
+        out["oblique"] = max(-85.0, min(85.0, float(oblique.group(1))))
+    tracking = _TRACKING.search(raw)
+    if tracking:
+        out["tracking"] = max(0.1, min(10.0, float(tracking.group(1))))
+    color = _COLOR.search(raw)
+    if color:
+        out["color_index"] = int(color.group(1))
+    align = _ALIGN.search(raw)
+    if align:
+        out["align"] = int(align.group(1))
+    out["underline"] = "\\L" in raw or "\\O" in raw
+    out["strikeout"] = "\\K" in raw
+    return out
+
+
+def adaptive_text_height(height: float, cap: float | None) -> float:
+    """Rank-preserving compression for pathologically large sheet titles.
+
+    A hard clamp flattened every large label to exactly the same size and
+    destroyed the drawing's type hierarchy (the exact complaint this fixes).
+    Above the cap we compress only the EXCESS by 97%, so order and visible
+    differences between 600 / 1900 / 3300 / 4200-unit labels are preserved
+    without letting a few title-block MTEXTs cover the whole sheet.
+    ``cap=None`` means exact 1:1 source heights (the "原样" setting).
+    """
+    if height <= 0 or not cap or cap <= 0 or height <= cap:
+        return height
+    return cap + (height - cap) * 0.03
+
+
+def wrap_text_lines(lines, max_chars: int) -> list[str]:
+    """Wrap MTEXT lines to its reference rectangle width (character units)."""
+    if max_chars <= 0:
+        return list(lines)
+    out: list[str] = []
+    for line in lines:
+        if len(line) <= max_chars:
+            out.append(line)
+            continue
+        buf: list[str] = []
+        width = 0
+        for ch in line:
+            cw = 2 if ord(ch) > 0x2E80 else 1
+            if width + cw > max_chars and buf:
+                out.append("".join(buf).rstrip())
+                buf, width = [], 0
+            buf.append(ch)
+            width += cw
+        if buf:
+            out.append("".join(buf).rstrip())
+    return [ln for ln in out if ln]
 
 
 def visible_text_lines(text: str) -> list[str]:

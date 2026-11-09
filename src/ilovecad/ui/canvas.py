@@ -278,7 +278,8 @@ class CadCanvas(QWidget):
     # -------------------------------------------------------------- rendering
     def _display_list(self):
         key = (self._revision, self.dark, self.show_lineweight,
-               self.include_measurements, self._highlight_index)
+               self.include_measurements, self._highlight_index,
+               self.doc.text_height_mode, self.doc.text_scale)
         if self._dl is None or key != self._dl_key:
             self._dl = build(self.doc, dark=self.dark,
                              include_measurements=self.include_measurements,

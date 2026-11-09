@@ -107,6 +107,9 @@ class DocumentSession:
             if counts.get("SPLINE"):
                 lines.append("SPLINE 显示时求值 NURBS 曲线，但写回仍退化为 2D "
                              "折线；HATCH 填充图案与 MTEXT 格式语义同样不还原")
+            lines.append("文字按 STYLE 表 / 内联字型映射到本机字体显示，SHX 字库"
+                         "不随软件分发；写回保留源字高与宽度因子，但 MTEXT 会被"
+                         "压成单行 TEXT")
         lines += [
             "经 DXF 中转，XDATA、代理对象、复杂块定义与 3D 实体不会原样回写",
             "编辑只作用于内存中的 2D 文档模型；保存/另存为始终锁定 "
