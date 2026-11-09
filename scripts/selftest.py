@@ -556,6 +556,29 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
             "title-block MTEXT height was not restored from the DWG"
         assert title[0].data["align"] == 1, \
             "MTEXT attachment point was not restored"
+        # TEXT group 73 is dropped by dwg2dxf; the alignment point 11/21 is
+        # the cell centre, so labels must be middle-centre, not baseline.
+        title_texts = [e for e in d.entities
+                       if e.data.get("source_kind") == "TEXT" and
+                       44000 < e.data["p"][0] < 48700 and
+                       21800 < e.data["p"][1] < 23300]
+        assert title_texts and all(e.data["align"] == 5 for e in title_texts), \
+            "title-block TEXT vertical justification was not recovered"
+        # Grid alignment is display-only and must stay inside the title block.
+        from ilovecad.model.titleblock import apply_title_block_alignment
+        frame = d.sheet_frame_bounds()
+        assert frame
+        rx0 = frame[0] + 0.45 * (frame[2] - frame[0])
+        ry1 = frame[1] + 0.45 * (frame[3] - frame[1])
+        aligned = [e for e in d.entities if e.data.get("display_offset")]
+        assert aligned, "title-block grid alignment was not applied"
+        assert all(rx0 <= e.data["p"][0] <= frame[2] and
+                   frame[1] <= e.data["p"][1] <= ry1 for e in aligned), \
+            "grid alignment moved a label outside the title block"
+        assert apply_title_block_alignment(d, False) == 0
+        assert not any(e.data.get("display_offset") for e in d.entities)
+        assert apply_title_block_alignment(d, True) > 0, \
+            "title-block alignment cannot be re-enabled"
         assert d.text_height_mode == "exact", \
             "viewer default must show the source font sizes 1:1"
         exact_dl = build(d)
@@ -737,6 +760,103 @@ def readonly_checks(kernel: LibreDwgKernel, result: dict) -> dict:
         "source_unchanged": True,
     }
     result["readonly"] = checks
+    return checks
+
+
+def editmode_checks(kernel: LibreDwgKernel, result: dict) -> dict:
+    """Edit-module regressions: lossless Save As, reversible degradation,
+    multi-line MTEXT write-back and the title-alignment toggle."""
+    from PySide6.QtWidgets import QDialog, QFileDialog
+
+    import ilovecad.ui.main_window as mw
+    from ilovecad.kernel.dxf_codec import parse_dxf, write_dxf
+    from ilovecad.model.session import EDITABLE, DocumentSession
+    from ilovecad.model.titleblock import apply_title_block_alignment
+
+    checks: dict = {}
+
+    # 1. Multi-line MTEXT must not be flattened into a literal "\P".
+    doc = DwgDocument()
+    doc.add(Entity(0, "TEXT", "0", data={
+        "p": (0.0, 0.0), "text": "第一行\n第二行\n第三行",
+        "height": 4.0, "mtext": True, "align": 1,
+        "line_spacing": 1.0, "width_factor": 1.0}))
+    stats: dict = {}
+    raw = write_dxf(doc, stats)
+    assert stats.get("mtext_lines") == 3, "multi-line MTEXT was not split"
+    back, _ = parse_dxf(raw)
+    written_lines = [str(e.data.get("text", "")) for e in back.entities
+                     if e.kind == "TEXT"]
+    assert written_lines == ["第一行", "第二行", "第三行"], \
+        "write-back lost the MTEXT line breaks"
+    assert not any("\\P" in t for t in written_lines), \
+        "literal \\P leaked into the saved TEXT"
+    checks["mtext_lines"] = written_lines
+
+    # 2. A degraded session can be restored from its in-memory DXF snapshot.
+    session = DocumentSession(
+        source_path=None, source_sha256="", source_format="dxf",
+        source_version="AC1018", import_dxf=raw, document=doc,
+        mode=EDITABLE, degraded=True, edit_started_at="2026-01-01T00:00:00",
+        risk_snapshot=["risks"])
+    fresh, _ = parse_dxf(raw)
+    session.restore_readonly(fresh)
+    assert session.read_only and not session.degraded
+    assert session.document is fresh and not session.risk_snapshot
+    assert session.edit_started_at == ""
+    checks["restore_readonly_unit"] = True
+
+    # 3. Real window: enter edit -> restore read-only -> unedited Save As is
+    #    a byte-identical copy, not an R2004 rebuild.
+    sample = WORK / "selftest_r2004.dwg"
+    assert sample.is_file(), "run the R2004 write test first"
+    before = hashlib.sha256(sample.read_bytes()).hexdigest()
+    win = MainWindow()
+    win.open_file(sample)
+    original_entities = len(win.doc.entities)
+    orig_dialog = mw.EditModeDialog.exec
+    orig_get = mw.QFileDialog.getSaveFileName
+    mw.EditModeDialog.exec = lambda *a: QDialog.Accepted
+    try:
+        win._confirm_enter_edit()
+        assert not win.session.read_only and win.session.degraded
+        win._restore_readonly()
+        assert win.session.read_only and not win.session.degraded
+        assert len(win.doc.entities) == original_entities
+        # Enter edit again but make NO edits: Save As must copy bytes.
+        win._confirm_enter_edit()
+        assert not win.canvas.undo_stack.can_undo
+        target = WORK / "editmode_unedited_saveas.dwg"
+        mw.QFileDialog.getSaveFileName = staticmethod(
+            lambda *a, **k: (str(target), ""))
+        try:
+            win.save_as()
+        finally:
+            mw.QFileDialog.getSaveFileName = orig_get
+        assert target.is_file() and \
+            hashlib.sha256(target.read_bytes()).hexdigest() == before, \
+            "unedited Save As rebuilt the drawing instead of copying it"
+        assert hashlib.sha256(sample.read_bytes()).hexdigest() == before
+        checks["unedited_saveas_lossless"] = True
+
+        # 4. TITLEALIGN toggle and the settings checkbox.
+        win._set_title_align(False)
+        assert not win.doc.align_title_text
+        assert not any(e.data.get("display_offset") for e in win.doc.entities)
+        win._set_title_align(True)
+        assert win.doc.align_title_text
+        sd = mw.SettingsDialog(win.theme, win.canvas.snap_config, win,
+                               title_align=True)
+        assert sd.ui.checkTitleAlign.isChecked()
+        sd.ui.checkTitleAlign.setChecked(False)
+        assert not sd.title_align_enabled()
+        sd.close()
+        checks["title_align_toggle"] = True
+    finally:
+        mw.EditModeDialog.exec = orig_dialog
+        mw.QFileDialog.getSaveFileName = orig_get
+        win.close()
+    result["editmode"] = checks
     return checks
 
 
@@ -946,6 +1066,9 @@ def main() -> int:
 
     step("只读 / 编辑分层回归")
     readonly_checks(kernel, result)
+
+    step("编辑模块改造回归（恢复只读 / 无损另存 / 多行文字 / 格线开关）")
+    editmode_checks(kernel, result)
 
     step("根入口 main.py 与命令行直接打开图纸")
     entry = ROOT / "main.py"

@@ -288,6 +288,8 @@ class LibreDwgKernel:
                                               self._run)
                     fixed = apply_native_text(doc, native)
                     if fixed:
+                        from ..model.titleblock import apply_title_block_alignment
+                        apply_title_block_alignment(doc, doc.align_title_text)
                         report.steps.append(
                             f"已从 DWG 原生字段恢复 {fixed} 个 MTEXT 的真实字高与附着点")
                     else:

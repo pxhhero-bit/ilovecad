@@ -189,6 +189,9 @@ class Entity:
             if not lines:
                 return b
             p = tuple(self.data.get("p", (0, 0)))
+            off = self.data.get("display_offset")
+            if off:
+                p = (p[0] + off[0], p[1] + off[1])
             h = float(self.data.get("height", 2.5)) or 2.5
             if h <= 1e-6:          # zero-height placeholder attributes
                 return b

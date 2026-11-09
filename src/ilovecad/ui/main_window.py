@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDia
 
 from .. import APP_NAME, APP_VERSION
 from ..kernel.core import ImportReport, KernelError, LibreDwgKernel
+from ..kernel.dxf_codec import parse_dxf
 from ..model import geometry as g
 from ..model import layer_ops
 from ..model.document import DwgDocument
@@ -102,7 +103,8 @@ class SettingsDialog(QDialog):
     def __init__(self, current_theme: str, snap_config: SnapConfig | None = None,
                  parent=None, *, units: int = DEFAULT_UNITS,
                  precision: int = DEFAULT_PRECISION,
-                 text_mode: str = "exact", text_scale: float = 1.0):
+                 text_mode: str = "exact", text_scale: float = 1.0,
+                 title_align: bool = True):
         super().__init__(parent)
         self.ui = load_ui(self, "settings")
         _localize_button_box(self.ui.buttonBox)
@@ -119,8 +121,10 @@ class SettingsDialog(QDialog):
         self.ui.btnUnitsDefaults.clicked.connect(
             lambda: self._load_units(DEFAULT_UNITS, DEFAULT_PRECISION))
         self._load_text(text_mode, text_scale)
+        self.ui.checkTitleAlign.setChecked(bool(title_align))
         self.ui.btnTextDefaults.clicked.connect(
-            lambda: self._load_text("exact", 1.0))
+            lambda: (self._load_text("exact", 1.0),
+                     self.ui.checkTitleAlign.setChecked(True)))
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
 
@@ -175,6 +179,9 @@ class SettingsDialog(QDialog):
     def text_settings(self) -> tuple[str, float]:
         mode = "exact" if self.ui.radioTextExact.isChecked() else "auto"
         return sanitize_text_settings(mode, self.ui.spinTextScale.value() / 100.0)
+
+    def title_align_enabled(self) -> bool:
+        return self.ui.checkTitleAlign.isChecked()
 
 
 # Older callers (and the command alias) still use the original name.
@@ -525,7 +532,61 @@ class MainWindow(QMainWindow):
             self.report.to_text() + "\n" + self.session.summary_text())
         self._status(
             "已进入编辑模式：2D 可编辑模型已启用；保存仍锁定 R2004 / AC1018，"
-            "源文件永不改写（如需恢复未修改状态请重新打开源文件）")
+            "源文件永不改写；输入 READONLY 可放弃编辑并从导入快照恢复只读")
+
+    def _restore_readonly(self) -> None:
+        """Discard in-memory edits and rebuild read-only from the DXF snapshot.
+
+        No source file is read or written: the pristine importer snapshot kept
+        in the session is the only input.  This makes degradation reversible
+        without weakening the read-only source protection.
+        """
+        if self.session.read_only:
+            self._status("当前已是只读会话")
+            return
+        if self.canvas.undo_stack.can_undo:
+            if QMessageBox.question(
+                    self, "放弃编辑",
+                    "当前有未保存的编辑；恢复只读会丢弃这些改动"
+                    "（源文件从未被改写）。继续吗？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No) != QMessageBox.Yes:
+                return
+        old = self.doc
+        view = self.canvas.view
+        saved_view = (view.scale, view.cx, view.cy)
+        try:
+            doc, _ = parse_dxf(self.session.import_dxf)
+        except Exception as exc:  # a corrupted snapshot must not crash the app
+            QMessageBox.critical(
+                self, "恢复只读失败",
+                f"导入快照解析异常（{type(exc).__name__}：{exc}）。"
+                "仍保持编辑模式，源文件未被改写。")
+            return
+        doc.source_path = str(self.session.source_path) if self.session.source_path else None
+        doc.source_version = self.session.source_version
+        doc.effective_version = self.report.effective_version
+        doc.downgraded = self.report.downgraded
+        doc.units, doc.precision = self.units, self.precision
+        doc.text_height_mode, doc.text_scale = self.text_mode, self.text_scale
+        if old.align_title_text != doc.align_title_text:
+            from ..model.titleblock import apply_title_block_alignment
+            doc.align_title_text = old.align_title_text
+            apply_title_block_alignment(doc, doc.align_title_text)
+        self.session.restore_readonly(doc)
+        self.doc = doc
+        self.canvas.set_document(doc)
+        self.canvas.view.scale, self.canvas.view.cx, self.canvas.view.cy = saved_view
+        self._apply_mode_state()
+        self._populate_layers()
+        self._refresh_units_label()
+        self.ui.reportBrowser.setPlainText(
+            self.report.to_text() + "\n" + self.session.summary_text())
+        self.ui.measureList.clear()
+        self.canvas.invalidate()
+        self._status(
+            "已放弃编辑并恢复只读：2D 模型从会话内的导入 DXF 快照重建，"
+            f"{len(doc.entities):,} 个实体；源文件 SHA-256 未变、从未改写")
 
     def _guard_edit(self, action=None) -> bool:
         """Run a mutating action, prompting for degradation when read-only."""
@@ -659,7 +720,8 @@ class MainWindow(QMainWindow):
             lines.append("按 2D 近似类型写出、几何可能失真：" + "、".join(
                 f"{k} × {v}" for k, v in approx))
             if counts.get("SPLINE"):
-                lines.append("SPLINE 曲线保存为控制点折线，曲线形状会改变")
+                lines.append("SPLINE 已按 NURBS 求值后以 2D 折线写出"
+                             "（非原生样条，折线长度不能代替原曲线长度）")
         if doc.source_units == 0:
             lines.append("源图纸 $INSUNITS=0（无单位）：写入时保留该标记，"
                          "测量数值仅按本机显示单位解释")
@@ -716,6 +778,21 @@ class MainWindow(QMainWindow):
             # operation here is a lossless byte copy of the source file.
             self.save_source_copy()
             return
+        if (not self.canvas.undo_stack.can_undo and
+                self.session.source_path is not None):
+            # The editable mode has produced no edits at all.  Rebuilding a
+            # 5976-entity drawing through DXF would silently discard HATCH /
+            # SPLINE / MTEXT semantics for no benefit.  Fall back to the
+            # byte-identical copy; WRITER2004 still forces a rebuild.
+            self._status(
+                "未检测到任何编辑，已改用按字节「原样副本」（无损）；"
+                "需要强制重建 R2004 请输入 WRITER2004")
+            self.save_source_copy()
+            return
+        self._save_as_rebuild()
+
+    def _save_as_rebuild(self):
+        """Explicit R2004 rebuild of the editable 2D model."""
         if not self._verify_source_unchanged():
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -1085,7 +1162,9 @@ class MainWindow(QMainWindow):
             "IloveCAD 命令与快捷键（在底部命令栏输入即可）\n"
             "========================================\n"
             "会话：打开图纸默认【只读】；EDIT / ED / EDITMODE 或点「进入编辑」\n"
-            "      确认降级风险后，才启用 2D 可编辑模型（不可撤销回退）；\n"
+            "      确认降级风险后，才启用 2D 可编辑模型；\n"
+            "      READONLY / ABANDON 放弃编辑、从导入快照恢复只读；\n"
+            "      未做任何编辑时「另存为」按字节无损复制，WRITER2004 强制重建；\n"
             "      SAVECOPY / COPYFILE 按字节另存原样副本（无损，SHA-256 校验）；\n"
             "      只读下「另存为」等同原样副本，保存 / DXF 重建导出被拒绝\n"
             "文件：OPEN / SAVE / DXF / PDF　（Ctrl+O / Ctrl+S / Ctrl+P / Ctrl+Shift+S）\n"
@@ -1104,6 +1183,7 @@ class MainWindow(QMainWindow):
             "测量：DI / DIST、CHAIN、AREA、R、ANG / DAN（三点夹角）、AL / ANGLELINE（两线夹角）\n"
             "设置：THEME / SETTINGS / OP 主题与对象捕捉；OSNAP 捕捉页；UNITS 单位与精度页\n"
             "      STYLE / FONT 文字与字体页（字高默认原样 1:1，可选自适应与显示倍率）\n"
+            "      TITLEALIGN 开关标题栏文字按图纸格线居中（仅显示层）\n"
             "帮助：HELP / ? 显示本说明\n"
             "\n测量结果列表：单击高亮，双击定位，右键可删除单条 / 复制数值 / 导出 CSV。\n"
             "鼠标：滚轮缩放，中键或「平移」模式左键拖动平移，Esc 取消当前命令。\n")
@@ -1153,6 +1233,18 @@ class MainWindow(QMainWindow):
         if cmd in ("STYLE", "FONT", "TEXTSET", "FONTS"):
             self._open_settings(text_page=True)
             return
+        if cmd in ("TITLEALIGN", "TBALIGN", "TITLEALIGNMENT"):
+            self._set_title_align(not self.doc.align_title_text)
+            return
+        if cmd in ("READONLY", "RO", "ABANDON", "DISCARD", "RESTORE"):
+            self._restore_readonly()
+            return
+        if cmd in ("WRITER2004", "REBUILDR2004", "FORCESAVE"):
+            if self.session.read_only:
+                self._confirm_enter_edit()
+            if not self.session.read_only:
+                self._save_as_rebuild()
+            return
         if cmd in ("LA", "LAYER", "LAYERS", "LM"):
             self.open_layer_manager()
             return
@@ -1170,11 +1262,6 @@ class MainWindow(QMainWindow):
             return
         if cmd in ("SAVECOPY", "COPYFILE", "SAVEASCOPY"):
             self.save_source_copy()
-            return
-        if cmd in ("READONLY", "RO"):
-            self._status(
-                "已进入编辑模式，降级不可回退；重新打开源文件即可恢复只读"
-                if not self.session.read_only else "当前已是只读会话")
             return
         if cmd == "SAVE":
             self.save()
@@ -1244,12 +1331,24 @@ class MainWindow(QMainWindow):
         self._refresh_snap_label()
 
     # --------------------------------------------------------------- settings
+    def _set_title_align(self, enabled: bool) -> None:
+        """Toggle viewer-only snapping of labels to their title-block cells."""
+        from ..model.titleblock import apply_title_block_alignment
+        self.doc.align_title_text = bool(enabled)
+        moved = apply_title_block_alignment(self.doc,
+                                            self.doc.align_title_text)
+        self.canvas.invalidate()
+        self._status(
+            f"标题栏格线对齐已{'开启' if enabled else '关闭'}："
+            f"{moved} 个文字按图纸格线做显示层居中；源文件与写出数据不变")
+
     def _open_settings(self, snap_page: bool = False,
                        units_page: bool = False, text_page: bool = False):
         dlg = SettingsDialog(self.theme, self.canvas.snap_config, self,
                              units=self.units, precision=self.precision,
                              text_mode=self.text_mode,
-                             text_scale=self.text_scale)
+                             text_scale=self.text_scale,
+                             title_align=self.doc.align_title_text)
         if snap_page:
             dlg.show_snap_page()
         if units_page:
@@ -1274,6 +1373,8 @@ class MainWindow(QMainWindow):
             self.doc.text_scale = self.text_scale
             self.canvas.fit_view()
             self.canvas.invalidate()
+        if dlg.title_align_enabled() != self.doc.align_title_text:
+            self._set_title_align(dlg.title_align_enabled())
         self._status(f"设置已保存：{theme_label(self.theme)}｜"
                      f"对象捕捉{'开' if self.canvas.snap_enabled else '关'}"
                      f"｜半径 {self.canvas.snap_config.radius_px:g} px｜"

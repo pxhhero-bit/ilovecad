@@ -129,8 +129,12 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
                 override = d.get("color_index")
                 if override is not None and not monochrome:
                     text_color = aci_rgb(int(override), dark)
+                pos = tuple(d.get("p", (0, 0)))
+                off = d.get("display_offset")
+                if off:
+                    pos = (pos[0] + off[0], pos[1] + off[1])
                 dl.texts.append(PaintText(
-                    pos=tuple(d.get("p", (0, 0))), text="\n".join(lines),
+                    pos=pos, text="\n".join(lines),
                     height=height, color=text_color,
                     rotation=float(d.get("rotation", 0.0)),
                     lines=lines, align=max(1, min(9, int(d.get("align", 1) or 1))),

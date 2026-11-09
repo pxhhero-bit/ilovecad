@@ -125,6 +125,9 @@ class DwgDocument:
     # an opt-in compression for exporters that emit pathological text heights.
     text_height_mode: str = "exact"
     text_scale: float = 1.0
+    # Viewer-only: snap labels to the centre of their title-block grid cell.
+    # Cleared / recomputed by model.titleblock.apply_title_block_alignment.
+    align_title_text: bool = True
     skipped: Counter = field(default_factory=Counter)
     notes: list[str] = field(default_factory=list)
     _next_id: int = 1

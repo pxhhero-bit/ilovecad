@@ -120,6 +120,7 @@
          <layout class="QVBoxLayout" name="vboxTextHeight">
           <item><widget class="QRadioButton" name="radioTextAuto"><property name="text"><string>自适应（可选）：仅压缩异常巨大的标题字，保留大小层级</string></property></widget></item>
           <item><widget class="QRadioButton" name="radioTextExact"><property name="text"><string>原样 1:1（默认）：完全按源图纸字高显示</string></property><property name="checked"><bool>true</bool></property></widget></item>
+          <item><widget class="QCheckBox" name="checkTitleAlign"><property name="text"><string>标题栏文字按图纸格线居中（仅显示层，源文件不变）</string></property><property name="checked"><bool>true</bool></property></widget></item>
          </layout>
         </widget>
        </item>

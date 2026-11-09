@@ -219,15 +219,25 @@ def _parse_entity(kind: str, groups) -> Entity | None:
             # TEXT group 11/21 is the alignment point when 72/73 are non-zero.
             hjust = int(_num(groups, "72", 0))
             vjust = int(_num(groups, "73", 0))
+            raw_p = (_num(groups, "10"), _num(groups, "20"))
+            ap = (_num(groups, "11"), _num(groups, "21"))
+            # dwg2dxf drops TEXT group 73 (vertical justification).  The
+            # source alignment point is then the only evidence: when it sits
+            # about half a text height ABOVE the insertion point, the label is
+            # middle-justified and 11/21 is its visual CENTRE.  Title-block
+            # cells are built exactly that way; treating 11/21 as the baseline
+            # shifted every label up by ~0.3 * height and onto the grid line.
+            if (vjust == 0 and hjust in (1, 2, 4, 5) and height > 0
+                    and (ap[0] or ap[1])
+                    and 0.25 * height <= ap[1] - raw_p[1] <= 0.85 * height):
+                vjust = 2
             baseline = vjust == 0
             hpos = {0: 0, 1: 1, 2: 2, 3: 0, 4: 1, 5: 1}.get(hjust, 0)
             vpos = {0: 2, 1: 2, 2: 1, 3: 0}.get(vjust, 2)
             align = vpos * 3 + hpos + 1
-            p = (_num(groups, "10"), _num(groups, "20"))
-            if hjust or vjust:
-                ap = (_num(groups, "11"), _num(groups, "21"))
-                if ap[0] or ap[1]:
-                    p = ap
+            p = raw_p
+            if (hjust or vjust) and (ap[0] or ap[1]):
+                p = ap
         if is_mtext:
             align = max(1, min(9, align))
         # Standard DXF: MTEXT group 41 is the reference rectangle width in
@@ -550,6 +560,17 @@ def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
             f"已解析 {len(doc.styles)} 个文字样式；SHX 字型按最接近的本机"
             "中文字体近似显示（黑体 / 宋体 / 楷体 / 仿宋 / ISO 单线体）")
 
+    # Snap labels to the centres of the title-block cells.  This is a viewer
+    # transform only: it fixes LibreDWG's lost group 73 / font-metric mismatch
+    # without touching the source bytes or anything written back.
+    from ..model.titleblock import apply_title_block_alignment
+    aligned = apply_title_block_alignment(doc, doc.align_title_text)
+    if aligned:
+        report["title_aligned"] = aligned
+        report["notes"].append(
+            f"已按图纸自身的标题栏格线对 {aligned} 个文字做显示层居中校正"
+            "（仅影响看图，源文件与写出数据不变；可用 TITLEALIGN 关闭）")
+
     for idx, e in enumerate(doc.entities, start=1):
         e.eid = idx
     doc._next_id = len(doc.entities) + 1
@@ -816,17 +837,40 @@ def write_dxf(doc: DwgDocument, stats: dict | None = None) -> bytes:
         elif k == "POINT":
             begin("POINT", e); w.xyz(*d["p"])
         elif k in ("TEXT", "MTEXT", "DIMENSION"):
-            begin("TEXT", e); w.xyz(*d["p"])
-            # Always write the SOURCE height: viewer-side display scaling must
-            # never leak into a saved drawing.
-            w.p(40, f"{d.get('height', 2.5):.6f}")
-            w.p(1, _dxf_text(d.get("text", "")))
-            w.p(50, f"{d.get('rotation', 0.0):.6f}")
-            w.p(41, f"{float(d.get('width_factor', 1.0) or 1.0):.6f}")
-            if d.get("oblique"):
-                w.p(51, f"{float(d['oblique']):.6f}")
-            w.p(7, str(d.get("style", "Standard") or "Standard"))
+            # A TEXT entity cannot carry MTEXT's \P line breaks.  Writing a
+            # whole multi-line note as one TEXT produced a literal "\P" in the
+            # saved drawing.  Emit one TEXT per line instead, preserving the
+            # source height, style, rotation, width and line spacing.
+            lines = g.visible_text_lines(str(d.get("text", ""))) or [""]
+            h = float(d.get("height", 2.5) or 2.5)
+            spacing = max(0.5, min(3.0,
+                float(d.get("line_spacing", 1.0) or 1.0)))
+            step = h * 1.25 * spacing
+            align = max(1, min(9, int(d.get("align", 1) or 1)))
+            vpos = (align - 1) // 3
+            p = tuple(d.get("p", (0.0, 0.0)))
+            n = len(lines)
+            for i, line in enumerate(lines):
+                if vpos == 0:          # top attachment: lines go downwards
+                    y = p[1] - i * step
+                elif vpos == 1:        # middle
+                    y = p[1] + ((n - 1) / 2.0 - i) * step
+                else:                  # bottom / baseline: upwards
+                    y = p[1] + i * step
+                begin("TEXT", e)
+                w.xyz(p[0], y)
+                # Always write the SOURCE height: viewer-side display scaling
+                # must never leak into a saved drawing.
+                w.p(40, f"{h:.6f}")
+                w.p(1, _dxf_text(line))
+                w.p(50, f"{d.get('rotation', 0.0):.6f}")
+                w.p(41, f"{float(d.get('width_factor', 1.0) or 1.0):.6f}")
+                if d.get("oblique"):
+                    w.p(51, f"{float(d['oblique']):.6f}")
+                w.p(7, str(d.get("style", "Standard") or "Standard"))
             converted(k, "TEXT")
+            if stats is not None and n > 1:
+                stats["mtext_lines"] = stats.get("mtext_lines", 0) + n
         elif k == "SOLID":
             pts = list(d.get("pts", []))
             if len(pts) < 3:

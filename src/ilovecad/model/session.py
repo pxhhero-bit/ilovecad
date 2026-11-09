@@ -4,10 +4,12 @@
 Opening a drawing produces a :class:`DocumentSession` in ``readonly`` mode:
 the original file bytes are never touched (verified by SHA-256), the pristine
 DXF produced by the importer is kept as an in-memory snapshot, and the parsed
-2D model is used for *viewing only*.  Editing is an explicit, one-way step:
-after the user accepts the risk list, :meth:`DocumentSession.enter_edit`
-degrades the session to the editable 2D model, which is the original write
-pipeline (DXF re-serialisation -> dwgwrite --as r2004 -> read-back gate).
+2D model is used for *viewing only*.  Editing is an explicit step: after the
+user accepts the risk list, :meth:`DocumentSession.enter_edit` degrades the
+session to the editable 2D model (DXF re-serialisation -> dwgwrite --as r2004
+-> read-back gate).  The degradation is reversible **in memory**: the pristine
+import snapshot is still there, so :meth:`restore_readonly` can discard the
+edits and rebuild a fresh read-only model without ever touching the source.
 
 The source layer is deliberately kept separate from ``DwgDocument``: the
 latter is an approximation (XDATA, proxy objects and complex blocks do not
@@ -69,12 +71,25 @@ class DocumentSession:
         return self.source_path.name if self.source_path else "未命名图纸"
 
     def enter_edit(self) -> list[str]:
-        """One-way degradation into the editable 2D model. Returns the risks."""
+        """Degrade the read-only session into the editable 2D model."""
         self.risk_snapshot = self.risk_lines()
         self.mode = EDITABLE
         self.degraded = True
         self.edit_started_at = datetime.now().isoformat(timespec="seconds")
         return self.risk_snapshot
+
+    def restore_readonly(self, document: DwgDocument) -> None:
+        """Discard all in-memory edits and return to a fresh read-only model.
+
+        ``document`` must be rebuilt from ``self.import_dxf`` (never from the
+        source file), so the pristine snapshot stays the single source of
+        truth and the source bytes are not read or verified again.
+        """
+        self.document = document
+        self.mode = READONLY
+        self.degraded = False
+        self.edit_started_at = ""
+        self.risk_snapshot = []
 
     # ------------------------------------------------------------------ risks
     def risk_lines(self) -> list[str]:
@@ -105,18 +120,18 @@ class DocumentSession:
             lines.append("进入编辑后按 2D 近似类型处理、几何可能失真："
                          + "、".join(f"{k} × {v}" for k, v in approx))
             if counts.get("SPLINE"):
-                lines.append("SPLINE 显示时求值 NURBS 曲线，但写回仍退化为 2D "
-                             "折线；HATCH 填充图案与 MTEXT 格式语义同样不还原")
+                lines.append("SPLINE 已按 NURBS 求值，写回仍为 2D 折线近似；"
+                             "HATCH 填充图案与 MTEXT 内联格式语义同样不还原")
             lines.append("文字按 STYLE 表 / 内联字型映射到本机字体显示，SHX 字库"
-                         "不随软件分发；写回保留源字高与宽度因子，但 MTEXT 会被"
-                         "压成单行 TEXT")
+                         "不随软件分发；写回保留源字高、宽度因子与 MTEXT 分行")
         lines += [
             "经 DXF 中转，XDATA、代理对象、复杂块定义与 3D 实体不会原样回写",
             "编辑只作用于内存中的 2D 文档模型；保存/另存为始终锁定 "
             "R2004 / AC1018，并做文件头 + 回读实体数双重校验",
             "只读期间可用「另存原样副本」按字节复制源文件（无损、不重建）；"
             "进入编辑后该选项不再代表当前内存模型",
-            "此降级不可撤销；如需回到未修改状态，请重新打开源文件",
+            "可用 READONLY / ABANDON 放弃编辑，从导入 DXF 快照恢复只读"
+            "（源文件不受影响）",
         ]
         if getattr(doc, "source_units", None) == 0:
             lines.append("源图纸 $INSUNITS=0（无单位）：写出保留该标记，"
@@ -141,7 +156,8 @@ class DocumentSession:
         ]
         if self.degraded:
             lines += [f"降级时间：{self.edit_started_at}",
-                      "当前状态：编辑模式（2D 可编辑模型，已降级，不可回退）",
+                      "当前状态：编辑模式（2D 可编辑模型，已降级）",
+                      "放弃编辑可输入 READONLY 恢复只读（源文件不受影响）",
                       "已接受的风险："]
             lines += [f"  · {line}" for line in
                       (self.risk_snapshot or self.risk_lines())]
