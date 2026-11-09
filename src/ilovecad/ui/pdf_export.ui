@@ -15,7 +15,7 @@
       <item row="1" column="0"><widget class="QLabel" name="labelOrient"><property name="text"><string>方向</string></property></widget></item>
       <item row="1" column="1"><widget class="QComboBox" name="comboOrientation"><item><property name="text"><string>横向</string></property></item><item><property name="text"><string>纵向</string></property></item></widget></item>
       <item row="2" column="0"><widget class="QLabel" name="labelScope"><property name="text"><string>范围</string></property></widget></item>
-      <item row="2" column="1"><widget class="QComboBox" name="comboScope"><item><property name="text"><string>全图</string></property></item><item><property name="text"><string>当前视图</string></property></item></widget></item>
+      <item row="2" column="1"><widget class="QComboBox" name="comboScope"><item><property name="text"><string>全图</string></property></item><item><property name="text"><string>当前视图</string></property></item><item><property name="text"><string>完整范围（含离群对象）</string></property></item></widget></item>
       <item row="3" column="0"><widget class="QLabel" name="labelScale"><property name="text"><string>比例 1 :</string></property></widget></item>
       <item row="3" column="1"><widget class="QSpinBox" name="spinScale"><property name="minimum"><number>1</number></property><property name="maximum"><number>100000</number></property><property name="value"><number>100</number></property></widget></item>
      </layout>

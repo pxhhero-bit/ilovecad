@@ -2,7 +2,7 @@
 """The in-memory drawing document."""
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 from . import geometry as g
@@ -18,6 +18,80 @@ class Layer:
     visible: bool = True
     frozen: bool = False
     locked: bool = False
+
+
+def _dominant_bounds(items, trim: float = 0.02):
+    """Bounds of the dominant spatial cluster, or the full bounds.
+
+    Returns ``(bounds, ignored_count, trimmed)``.  Entity centres are binned
+    on a 64x64 grid; a flood fill from the densest cell through non-empty
+    neighbours finds the main sheet.  Empty cells isolate other sheets.
+    """
+    full = None
+    for b in items:
+        full = g.expand_bounds(full, b)
+    if not full or len(items) < 40:
+        return full, 0, False
+    fw, fh = full[2] - full[0], full[3] - full[1]
+    if fw <= 1e-9 or fh <= 1e-9:
+        return full, 0, False
+
+    n_cells = 64
+    cells: Counter = Counter()
+    cell_of: list[tuple[int, int]] = []
+    xs: list[float] = []
+    ys: list[float] = []
+    for b in items:
+        cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+        ix = min(n_cells - 1, max(0, int((cx - full[0]) / fw * (n_cells - 1))))
+        iy = min(n_cells - 1, max(0, int((cy - full[1]) / fh * (n_cells - 1))))
+        cells[(ix, iy)] += 1
+        cell_of.append((ix, iy))
+        xs.extend((b[0], b[2]))
+        ys.extend((b[1], b[3]))
+    peak, peak_count = cells.most_common(1)[0]
+    cluster = None
+    if peak_count >= max(5, len(items) * 0.005):
+        # Any non-empty neighbouring cell belongs to the main sheet: sparse
+        # border entities must not be cut off by an aggressive density cut.
+        seen = {peak}
+        queue = deque([peak])
+        while queue:
+            x, y = queue.popleft()
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    nb = (x + dx, y + dy)
+                    if nb in cells and nb not in seen:
+                        seen.add(nb)
+                        queue.append(nb)
+        chosen = [items[i] for i, c in enumerate(cell_of) if c in seen]
+        if len(chosen) >= max(20, len(items) * 0.5):
+            b = chosen[0]
+            for other in chosen[1:]:
+                b = g.expand_bounds(b, other)
+            pad_x, pad_y = (b[2] - b[0]) * 0.03, (b[3] - b[1]) * 0.03
+            cluster = (b[0] - pad_x, b[1] - pad_y,
+                       b[2] + pad_x, b[3] + pad_y)
+    if cluster is None:
+        xs.sort(); ys.sort()
+
+        def quantile(values, p):
+            return values[min(len(values) - 1,
+                             max(0, int(round((len(values) - 1) * p))))]
+
+        x0, x1 = quantile(xs, trim), quantile(xs, 1 - trim)
+        y0, y1 = quantile(ys, trim), quantile(ys, 1 - trim)
+        tw, th = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
+        if fw <= 1.6 * tw and fh <= 1.6 * th:
+            return full, 0, False
+        cluster = (x0, y0, x1, y1)
+    if (cluster[2] - cluster[0] >= 0.98 * fw and
+            cluster[3] - cluster[1] >= 0.98 * fh):
+        return full, 0, False
+    ignored = sum(1 for b in items
+                  if b[2] < cluster[0] or b[0] > cluster[2] or
+                  b[3] < cluster[1] or b[1] > cluster[3])
+    return cluster, ignored, True
 
 
 @dataclass
@@ -78,57 +152,70 @@ class DwgDocument:
     def locked_layers(self) -> set[str]:
         return {name for name, layer in self.layers.items() if layer.locked}
 
+    def text_height_cap(self):
+        """Visual ceiling for oversized MTEXT, derived from real geometry.
+
+        Some CAD exporters (or a heavily scaled INSERT) emit sheet titles with
+        a text height of several thousand drawing units.  Rendering those at
+        face value paints giant glyphs over the drawing.  The ceiling is 1/30
+        of the dominant *non-text* sheet size; normal annotation is untouched
+        and the original height is still written back on save.
+        """
+        items = []
+        for e in self.entities:
+            if e.kind in ("TEXT", "MTEXT", "DIMENSION"):
+                continue
+            b = e.bounds()
+            if b:
+                items.append(b)
+        if len(items) < 20:
+            return None
+        cluster, _, _ = _dominant_bounds(items)
+        if not cluster:
+            return None
+        return max(min(cluster[2] - cluster[0], cluster[3] - cluster[1]) / 30.0,
+                   1e-6)
+
+    def full_bounds(self):
+        """Literal extents with the source (uncapped) text heights.
+
+        The viewer caps absurdly large sheet titles for display only; the DXF
+        header written back still describes the real text heights.
+        """
+        b = None
+        for e in self.entities:
+            b = g.expand_bounds(b, e.bounds(None))
+        return b
+
     def bounds(self, only_visible: bool = False):
+        cap = self.text_height_cap()
         b = None
         for e in self.entities:
             if only_visible and not self.visible(e):
                 continue
-            b = g.expand_bounds(b, e.bounds())
+            b = g.expand_bounds(b, e.bounds(cap))
         return b
 
-    def robust_bounds(self, trim: float = 0.01):
+    def robust_bounds(self, trim: float = 0.02):
         """Return ``(bounds, ignored_count)`` for a usable "zoom extents".
 
-        Real drawings often contain a few stray objects thousands of units
-        away from the actual sheet. Fitting to the literal extents then squashes
-        the whole drawing into a few pixels. Trim only when the outliers are
-        extreme (>3x the dense area); PDF full-extent export still uses
-        ``bounds()`` so nothing is silently omitted from the printed output.
+        Real drawings often keep several sheets / title blocks thousands of
+        units away from the actual drawing.  Fitting to the literal extents
+        squashes the real content into a few pixels.  The dominant spatial
+        cluster is used instead; FITALL / PDF「完整范围」still use
+        :meth:`bounds` and therefore include every object.
         """
-        full = self.bounds()
-        xs: list[float] = []
-        ys: list[float] = []
+        cap = self.text_height_cap()
+        items = []
         for e in self.entities:
-            b = e.bounds()
+            b = e.bounds(cap)
             if b:
-                xs.extend((b[0], b[2]))
-                ys.extend((b[1], b[3]))
-        if not full or len(xs) < 40:
-            return full, 0
-        xs.sort()
-        ys.sort()
-
-        def quantile(values, p):
-            return values[min(len(values) - 1,
-                             max(0, int(round((len(values) - 1) * p))))]
-
-        x0, x1 = quantile(xs, trim), quantile(xs, 1 - trim)
-        y0, y1 = quantile(ys, trim), quantile(ys, 1 - trim)
-        fw, fh = max(full[2] - full[0], 1e-6), max(full[3] - full[1], 1e-6)
-        tw, th = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
-        if fw <= 3 * tw and fh <= 3 * th:
-            return full, 0
-        trimmed = (min(x0, full[0]) if fw <= 3 * tw else x0,
-                   min(y0, full[1]) if fh <= 3 * th else y0,
-                   max(x1, full[2]) if fw <= 3 * tw else x1,
-                   max(y1, full[3]) if fh <= 3 * th else y1)
-        ignored = 0
-        for e in self.entities:
-            b = e.bounds()
-            if b and (b[2] < trimmed[0] or b[0] > trimmed[2] or
-                      b[3] < trimmed[1] or b[1] > trimmed[3]):
-                ignored += 1
-        return trimmed, ignored
+                items.append(b)
+        full = None
+        for b in items:
+            full = g.expand_bounds(full, b)
+        cluster, ignored, trimmed = _dominant_bounds(items, trim)
+        return (cluster, ignored) if trimmed else (full, 0)
 
     def entity_count_by_kind(self) -> Counter:
         return Counter(e.kind for e in self.entities)

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import copy
 import math
-import re
 from dataclasses import dataclass, field
 
 from . import geometry as g
@@ -56,12 +55,17 @@ class Entity:
                 return [(order, True)]
             return []
         if k == "SPLINE":
+            # ``pts`` is the evaluated B-spline (see geometry.nurbs_points);
+            # ``control`` keeps the original control polygon for snapping.
             pts = [tuple(p[:2]) for p in d.get("pts", [])]
-            return [(pts, False)] if len(pts) > 1 else []
+            return [(pts, bool(d.get("closed")))] if len(pts) > 1 else []
         if k == "HATCH":
             # Boundary vertices carry an optional third element (bulge) for
-            # the DXF writer; display geometry is strictly 2D.
-            return [([tuple(p[:2]) for p in path], True)
+            # the DXF writer; display geometry is strictly 2D and each loop is
+            # closed independently. A HATCH is never a solid filled blob.
+            return [(g.lwpolyline_points(
+                        [tuple(p) if len(p) >= 3 else (p[0], p[1], 0.0)
+                         for p in path], True), True)
                     for path in d.get("paths", []) if len(path) > 2]
         if k == "POINT":
             p = tuple(d["p"])
@@ -122,7 +126,8 @@ class Entity:
             if k == "LINE":
                 chain([tuple(d["a"]), tuple(d["b"])])
             elif k in ("LWPOLYLINE", "POLYLINE", "SPLINE"):
-                pts = [tuple(p) for p in d.get("pts", [])]
+                raw = d.get("control") if k == "SPLINE" else None
+                pts = [tuple(p) for p in (raw or d.get("pts", []))]
                 chain(pts, bool(d.get("closed")), bulges=k != "SPLINE")
             elif k == "CIRCLE":
                 c, r = tuple(d["c"]), float(d["r"])
@@ -174,24 +179,49 @@ class Entity:
                   "insertion": "插入点", "node": "点"}
         return [(p, labels.get(kind, kind)) for p, kind in self.snap_candidates()]
 
-    def bounds(self):
+    def bounds(self, height_cap: float | None = None):
         b = None
         for pts, _ in self.polylines():
             b = g.expand_bounds(b, g.bounds_of(pts))
         if self.kind in ("TEXT", "MTEXT", "DIMENSION"):
+            lines = g.visible_text_lines(str(self.data.get("text", "")))
+            if not lines:
+                return b
             p = tuple(self.data.get("p", (0, 0)))
             h = float(self.data.get("height", 2.5)) or 2.5
-            # Group 41 is a relative width factor, NOT an absolute width.
-            # Treating it as millimetres (or extrapolating a long formatting
-            # string) invented extents tens of thousands of units away and
-            # wrecked zoom-extents / full-page PDF scaling on real drawings.
-            factor = float(self.data.get("width", 0) or 1.0)
+            if h <= 1e-6:          # zero-height placeholder attributes
+                return b
+            if height_cap and height_cap > 0:
+                h = min(h, height_cap)
+            # Group 41 of TEXT is a RELATIVE width factor; group 41 of MTEXT
+            # is a column width in drawing units. Neither may be extrapolated
+            # into a tens-of-thousands-of-units wide phantom bounding box.
+            factor = float(self.data.get("width_factor",
+                                         self.data.get("width", 1.0)) or 1.0)
             factor = max(0.1, min(factor, 5.0))
-            text = re.sub(r"\\[A-Za-z][^;]*;|\{[^{}]*\}", "",
-                          str(self.data.get("text", "")))
-            chars = max(1, min(len(text.strip()), 120))
-            w = chars * h * 0.6 * factor
-            b = g.expand_bounds(b, (p[0], p[1] - h, p[0] + w, p[1] + h))
+            char_count = max(1, min(max(len(ln.strip()) for ln in lines), 200))
+            w = char_count * h * 0.6 * factor
+            column = float(self.data.get("column_width", 0.0) or 0.0)
+            if column > h:
+                w = min(w, column)
+            w = min(w, h * 400.0)
+            n = max(1, min(len(lines), 60))
+            total_h = n * h * 1.25
+            attach = int(self.data.get("align", 1) or 1)
+            hpos = (attach - 1) % 3          # 0 left, 1 centre, 2 right
+            x0 = p[0] - (w / 2 if hpos == 1 else w if hpos == 2 else 0.0)
+            x1 = x0 + w
+            if self.data.get("mtext"):
+                vpos = (attach - 1) // 3      # 0 top, 1 middle, 2 bottom
+                if vpos == 0:
+                    y0, y1 = p[1] - total_h, p[1] + 0.3 * h
+                elif vpos == 1:
+                    y0, y1 = p[1] - total_h / 2, p[1] + total_h / 2
+                else:
+                    y0, y1 = p[1] - 0.3 * h, p[1] + total_h
+            else:
+                y0, y1 = p[1] - h, p[1] + h
+            b = g.expand_bounds(b, (x0, y0, x1, y1))
         return b
 
     # --------------------------------------------------------------- transform
@@ -234,19 +264,20 @@ class Entity:
             if key in d and isinstance(d[key], (tuple, list)) and len(d[key]) >= 2:
                 d[key] = px(d[key])
 
-        if "pts" in d and isinstance(d["pts"], list):
-            new_pts = []
-            for item in d["pts"]:
-                if isinstance(item, (tuple, list)) and len(item) >= 2:
-                    q = px(item)
-                    tail = tuple(item[2:])
-                    if op == "mirror" and tail and isinstance(tail[0], (int, float)):
-                        # Bulge encodes arc direction; a reflection reverses it.
-                        tail = (-float(tail[0]),) + tail[1:]
-                    new_pts.append(q + tail if tail else q)
-                else:
-                    new_pts.append(item)
-            d["pts"] = new_pts
+        for key in ("pts", "control"):
+            if key in d and isinstance(d[key], list):
+                new_pts = []
+                for item in d[key]:
+                    if isinstance(item, (tuple, list)) and len(item) >= 2:
+                        q = px(item)
+                        tail = tuple(item[2:])
+                        if op == "mirror" and tail and isinstance(tail[0], (int, float)):
+                            # Bulge encodes arc direction; a reflection reverses it.
+                            tail = (-float(tail[0]),) + tail[1:]
+                        new_pts.append(q + tail if tail else q)
+                    else:
+                        new_pts.append(item)
+                d[key] = new_pts
 
         if "paths" in d and isinstance(d["paths"], list):
             d["paths"] = [[px(p) for p in path] for path in d["paths"]]

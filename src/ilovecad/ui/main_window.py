@@ -1068,6 +1068,7 @@ class MainWindow(QMainWindow):
             "      只读期间仍可导出矢量 PDF、测量、图层显隐与对象捕捉\n"
             "视图：Z 或 FIT 适应全图、FITALL / ZEXTENTS 完整范围（含离群对象）、\n"
             "      P 平移、F7 栅格、F8 正交、GRID / ORTHO\n"
+            "      PDF 范围：全图（主体图幅）/ 当前视图 / 完整范围（含离群对象）\n"
             "捕捉：F3 或 SNAP 开关；OSNAP / SNAPSET 打开捕捉设置；\n"
             "       端点 / 顶点、中点、中心 / 圆心、象限点、交点、垂足、最近点可单独开关\n"
             "绘制：L / LINE、PL、REC、C / CIRCLE、A、T / TEXT\n"

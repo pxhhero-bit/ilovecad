@@ -181,11 +181,32 @@ def _parse_entity(kind: str, groups) -> Entity | None:
             text = "".join(v for code, v in groups if code in ("3", "1"))
         else:
             text = _first(groups, "1", "") or ""
-        d = {"p": (_num(groups, "10"), _num(groups, "20")),
+        raw_height = abs(_num(groups, "40", 2.5))
+        height = raw_height if raw_height > 1e-6 else 0.0
+        is_mtext = kind == "MTEXT"
+        is_dim = kind == "DIMENSION"
+        if is_dim:
+            # Dimension lines / arrows live in an anonymous block (*D…); the
+            # DIMENSION entity itself carries only a placeholder ("<>"). Never
+            # render that placeholder as literal text.
+            p = (_num(groups, "11"), _num(groups, "21"))
+            if not (p[0] or p[1]):
+                p = (_num(groups, "10"), _num(groups, "20"))
+            text = ""
+        else:
+            p = (_num(groups, "10"), _num(groups, "20"))
+        d = {"p": p,
              "text": g.decode_cad_text(text),
-             "height": abs(_num(groups, "40", 2.5)) or 2.5,
+             "height": height,
              "rotation": _num(groups, "50"),
-             "width": _num(groups, "41")}
+             "width": _num(groups, "41", 1.0) or 1.0 if not is_mtext else 1.0,
+             "width_factor": (_num(groups, "41", 1.0) or 1.0)
+                             if not is_mtext and not is_dim else 1.0,
+             "column_width": _num(groups, "41", 0.0) if is_mtext else 0.0,
+             "align": max(1, min(9, int(_num(groups, "71", 1)) or 1))
+                      if is_mtext else 1,
+             "mtext": is_mtext, "dimension": is_dim,
+             "source_kind": kind}
         kind = {"MTEXT": "TEXT", "DIMENSION": "DIMENSION"}.get(kind, kind)
     elif kind == "SOLID":
         pts = [(_num(groups, "10"), _num(groups, "20")),
@@ -194,10 +215,23 @@ def _parse_entity(kind: str, groups) -> Entity | None:
                (_num(groups, "13"), _num(groups, "23"))]
         d = {"pts": pts}
     elif kind == "SPLINE":
-        pts = _xy_pairs(groups, "10", "20") or _xy_pairs(groups, "11", "21")
-        if len(pts) < 2:
+        # DXF SPLINE: 10/20 control points, 11/21 fit points (rarely present),
+        # 40 knot vector, 41 weights, 71 degree, 70 flags. Evaluating the real
+        # B-spline instead of drawing its control polygon is essential: a
+        # control polygon is a hull, not the curve, and reads as scribble.
+        ctrl = _xy_pairs(groups, "10", "20") or _xy_pairs(groups, "11", "21")
+        if len(ctrl) < 2:
             return None
-        d = {"pts": pts}
+        knots = [_f(v) for code, v in groups if code == "40"]
+        weights = [_f(v, 1.0) for code, v in groups if code == "41"]
+        if len(weights) != len(ctrl):
+            weights = []
+        degree = int(_num(groups, "71", 3)) or 3
+        flags = int(_num(groups, "70"))
+        pts = g.nurbs_points(ctrl, knots, degree, weights or None)
+        d = {"pts": pts, "control": ctrl, "knots": knots,
+             "degree": degree, "weights": weights,
+             "closed": bool(flags & 1)}
     elif kind == "HATCH":
         # A HATCH starts with an elevation point (10/20/30, usually 0,0) and
         # an extrusion vector, THEN one or more boundary loops announced by
@@ -428,12 +462,12 @@ def parse_dxf(data: bytes) -> tuple[DwgDocument, dict]:
     report["by_kind"] = dict(doc.entity_count_by_kind())
     if report["by_kind"].get("SPLINE"):
         report["notes"].append(
-            f"SPLINE × {report['by_kind']['SPLINE']} 仅按控制点折线显示 / 写出，"
-            "曲线形状会有偏差，测量时请勿以该折线代替原曲线")
+            f"SPLINE × {report['by_kind']['SPLINE']} 已按 NURBS 曲线求值后以折线显示 / 写出，"
+            "写回仍为 2D 折线近似（非原生样条），测量时请勿以折线代替原曲线")
     if report["by_kind"].get("HATCH"):
         report["notes"].append(
-            f"HATCH × {report['by_kind']['HATCH']} 按边界多段线显示 / 写出，"
-            "填充图案不会还原")
+            f"HATCH × {report['by_kind']['HATCH']} 按边界多段线写出；屏幕 / PDF "
+            "显示边界轮廓与近似斜线图案，原填充图案不会还原")
     report["skipped"] = dict(report["skipped"])
     doc.skipped.update(report["skipped"])
     doc.notes.extend(report["notes"])
@@ -516,7 +550,7 @@ def write_dxf(doc: DwgDocument, stats: dict | None = None) -> bytes:
     w.p(9, "$INSUNITS"); w.p(70, source_units)
     w.p(9, "$MEASUREMENT"); w.p(70, 1)
     w.p(9, "$HANDSEED"); w.p(5, "__HANDSEED__")
-    b = doc.bounds() or (0, 0, 100, 100)
+    b = doc.full_bounds() or (0, 0, 100, 100)
     w.p(9, "$EXTMIN"); w.p(10, f"{b[0]:.6f}"); w.p(20, f"{b[1]:.6f}"); w.p(30, 0)
     w.p(9, "$EXTMAX"); w.p(10, f"{b[2]:.6f}"); w.p(20, f"{b[3]:.6f}"); w.p(30, 0)
     w.p(0, "ENDSEC")

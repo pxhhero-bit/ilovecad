@@ -190,8 +190,8 @@ class CadCanvas(QWidget):
             self.view.fit(bounds)
             if ignored:
                 self.statusMessage.emit(
-                    f"全图视图已忽略 {ignored} 个远离主体的离群对象；"
-                    "输入 FITALL 查看完整范围，PDF「全图」始终包含全部对象")
+                    f"全图视图已按主体图幅显示，忽略 {ignored} 个远处独立图框 / "
+                    "离群对象；输入 FITALL 查看完整范围，PDF 可选「完整范围」")
         self.update()
 
     def zoom_in(self) -> None:

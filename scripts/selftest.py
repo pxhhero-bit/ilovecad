@@ -314,6 +314,136 @@ def redteam_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     return checks
 
 
+def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
+    """Display pipeline regressions: MTEXT, HATCH, NURBS, dominant fit, PDF."""
+    from ilovecad.kernel.dxf_codec import parse_dxf
+    from ilovecad.model import geometry as g
+    from ilovecad.render.displaylist import build
+    from ilovecad.render.pdf import PdfOptions, PdfRenderer
+    from ilovecad.ui.main_window import PdfExportDialog
+
+    checks: dict = {}
+    dlg = PdfExportDialog()
+    assert dlg.ui.comboScope.count() == 3
+    assert dlg.options().scope == "全图"
+    dlg.ui.comboScope.setCurrentIndex(2)
+    assert dlg.options().scope.startswith("完整范围")
+    dlg.close()
+    checks["pdf_scope"] = ["全图", "当前视图", "完整范围"]
+
+    step("渲染回归：MTEXT 格式码 / 多行 / 纯格式碎片")
+    assert g.visible_text_lines(
+        r"{\fSimHei|b0|i0|c134|p49;DN15气动阀}") == ["DN15气动阀"]
+    assert g.visible_text_lines(r"|b0|i0|c1|p0;\o\l") == []
+    assert g.visible_text_lines(r"\A1;3000") == ["3000"]
+    note = (r"{\C4; \H1.5x; \fKaiTi|b0|i0|c134|p49;"
+            r"\H0.8333x; 技术要求：\P1 辊筒面高于机架面10mm"
+            r"\P2 辊筒采用直径76*4}")
+    assert g.visible_text_lines(note) == [
+        "技术要求：", "1 辊筒面高于机架面10mm", "2 辊筒采用直径76*4"]
+    checks["mtext_cleanup"] = True
+
+    doc = DwgDocument()
+    for i in range(60):
+        doc.add(Entity(0, "LINE", "0", data={"a": (float(i), 0.0),
+                                             "b": (float(i), 100.0)}))
+    doc.add(Entity(0, "TEXT", "0", data={
+        "p": (0.0, 120.0), "text": note, "height": 10.0, "rotation": 0.0,
+        "mtext": True, "align": 1, "width_factor": 1.0, "column_width": 0.0}))
+    doc.add(Entity(0, "TEXT", "0", data={
+        "p": (0.0, 140.0), "text": r"|b0|i0|c1|p0;\o\l", "height": 10.0}))
+    doc.add(Entity(0, "HATCH", "0", data={"paths": [
+        [(0.0, 0.0, 0.0), (10.0, 0.0, 0.0), (10.0, 10.0, 0.0), (0.0, 10.0, 0.0)],
+        [(3.0, 3.0, 0.0), (3.0, 7.0, 0.0), (7.0, 7.0, 0.0), (7.0, 3.0, 0.0)]]}))
+    dl = build(doc)
+    texts = [t for t in dl.texts if not t.annotation]
+    assert len(texts) == 1, "pure formatting debris was rendered as text"
+    assert texts[0].lines == ["技术要求：", "1 辊筒面高于机架面10mm",
+                              "2 辊筒采用直径76*4"]
+    hatch = [p for p in dl.paths if p.kind == "HATCH"]
+    assert hatch and not any(p.filled for p in hatch), \
+        "HATCH was painted as a solid blob again"
+    assert sum(1 for p in hatch if not p.closed) > 0, \
+        "hatch pattern strokes were not generated"
+    checks["hatch_outline"] = len(hatch)
+
+    step("渲染回归：SPLINE 真实 NURBS 求值与节点回退")
+    ctrl = [(0.0, 0.0), (1.0, 2.0), (3.0, 2.0), (4.0, 0.0), (5.0, 1.0)]
+    knots = [0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0]
+    curve = g.nurbs_points(ctrl, knots, 3)
+    assert len(curve) > len(ctrl)
+    assert abs(curve[0][0] - ctrl[0][0]) < 1e-6
+    assert abs(curve[-1][0] - ctrl[-1][0]) < 1e-6
+    assert len(g.nurbs_points(ctrl, [], 3)) > len(ctrl), \
+        "missing knot vector did not fall back to a clamped uniform spline"
+    pairs = [("0", "SECTION"), ("2", "ENTITIES"), ("0", "SPLINE"),
+             ("8", "0"), ("70", "8"), ("71", "3"), ("72", "9"),
+             ("73", "5"), ("74", "0")]
+    pairs += [("40", str(v)) for v in knots]
+    for x, y in ctrl:
+        pairs += [("10", str(x)), ("20", str(y))]
+    pairs += [("0", "ENDSEC"), ("0", "EOF")]
+    parsed, _ = parse_dxf(
+        "".join(f"{c}\n{v}\n" for c, v in pairs).encode("utf-8"))
+    sp = parsed.entities[0]
+    assert sp.kind == "SPLINE"
+    assert len(sp.data["pts"]) > len(sp.data["control"])
+    assert sp.data["degree"] == 3 and len(sp.data["knots"]) == 9
+    checks["spline_nurbs"] = {"control": len(sp.data["control"]),
+                              "evaluated": len(sp.data["pts"])}
+
+    step("渲染回归：超大字高只做显示限高，不改写源数据")
+    big = DwgDocument()
+    for i in range(60):
+        big.add(Entity(0, "LINE", "0", data={"a": (float(i), 0.0),
+                                             "b": (float(i), 100.0)}))
+    big.add(Entity(0, "TEXT", "0", data={"p": (0.0, 0.0), "text": "大标题",
+                                         "height": 10000.0, "mtext": True}))
+    cap = big.text_height_cap()
+    assert cap and cap < 10000
+    assert build(big).texts[0].height <= cap + 1e-6
+    assert big.entities[-1].data["height"] == 10000.0
+    checks["text_height_cap"] = round(cap, 3)
+
+    step("真实图纸：主体图幅视图 / 无格式码 / 无实心填充 / PDF 完整范围")
+    real = Path(os.environ.get("ILOVECAD_REAL_DRAWING", ""))
+    if not real.is_file():
+        candidates = sorted(p for p in (ROOT / "tests").glob("*.dwg")
+                            if p.is_file())
+        real = candidates[0] if candidates else Path("")
+    if real.is_file():
+        s = kernel.read_session(real)
+        d = s.document
+        full = d.bounds()
+        fit_bounds, ignored = d.robust_bounds()
+        assert fit_bounds and ignored > 0
+        assert (fit_bounds[2] - fit_bounds[0]) < (full[2] - full[0]) * 0.6, \
+            "zoom extents is still dominated by remote sheets"
+        rdl = build(d)
+        assert not any(p.filled for p in rdl.paths if p.kind == "HATCH")
+        all_lines = [ln for t in rdl.texts for ln in t.lines]
+        assert all_lines and all("|b0" not in ln and "{\\" not in ln
+                                 and "\\o\\l" not in ln for ln in all_lines)
+        assert max(len(ln) for ln in all_lines) < 200, \
+            "a multi-line note was flattened into one endless line"
+        splines = [e for e in d.entities if e.kind == "SPLINE"]
+        assert splines and all(len(e.data["pts"]) >= len(e.data["control"])
+                               for e in splines)
+        full_pdf = WORK / "render_full_extent.pdf"
+        PdfRenderer.export(str(full_pdf), d, rdl,
+                           PdfOptions(paper="A3", scope="完整范围"), None)
+        assert full_pdf.read_bytes()[:5] == b"%PDF-"
+        checks["realworld_render"] = {
+            "full_width": round(full[2] - full[0], 1),
+            "fit_width": round(fit_bounds[2] - fit_bounds[0], 1),
+            "ignored": ignored, "text_lines": len(all_lines),
+            "hatch_paths": sum(1 for p in rdl.paths if p.kind == "HATCH"),
+            "full_extent_pdf_bytes": full_pdf.stat().st_size,
+        }
+    result["render"] = checks
+    return checks
+
+
 def readonly_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     """Read-only source layer / explicit degradation regression."""
     from PySide6.QtWidgets import QDialog, QFileDialog, QMessageBox
@@ -657,6 +787,9 @@ def main() -> int:
 
     step("红队查漏补缺回归 + 真实图纸")
     redteam_checks(kernel, result)
+
+    step("渲染管线回归（MTEXT / HATCH / NURBS / 主体图幅 / PDF）")
+    render_checks(kernel, result)
 
     step("只读 / 编辑分层回归")
     readonly_checks(kernel, result)

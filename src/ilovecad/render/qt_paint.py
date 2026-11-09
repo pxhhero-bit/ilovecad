@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QPen, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QPen, QPolygonF
 
 from .displaylist import DisplayList
 from ..fonts import drawing_font
@@ -44,17 +44,39 @@ def paint_display_list(painter, dl: DisplayList, view: ViewTransform,
             painter.drawPolyline(poly)
 
     for item in dl.texts:
-        if not item.text:
+        lines = item.lines or [str(item.text).replace("\n", " ")]
+        if not lines or not any(lines):
+            continue
+        if item.height <= 0:
             continue
         pos = view.to_screen(item.pos)
-        size = max(7.0, min(96.0, item.height * view.scale))
+        # Keep text proportional to the geometry: a hard 96 px ceiling made
+        # large sheet titles shrink into unreadable overlapping glyphs.
+        size = max(6.0, min(512.0, item.height * view.scale))
         font = drawing_font(size)
         painter.setFont(font)
+        fm = QFontMetrics(font)
         r, g, b = item.color
         painter.setPen(QColor(230, 90, 40) if item.annotation else QColor(r, g, b))
-        painter.save()
-        painter.translate(QPointF(pos[0], pos[1]))
-        if item.rotation:
-            painter.rotate(-item.rotation)
-        painter.drawText(0, 0, item.text.replace("\n", " "))
-        painter.restore()
+        line_h = size * 1.25
+        n = len(lines)
+        hpos = ((item.align - 1) % 3) if item.mtext else 0
+        if item.mtext and n > 1:
+            vpos = (item.align - 1) // 3
+            if vpos == 0:
+                y0 = size * 0.85
+            elif vpos == 1:
+                y0 = -(n - 1) * line_h / 2.0
+            else:
+                y0 = -(n - 1) * line_h - size * 0.15
+        else:
+            y0 = 0.0
+        for i, line in enumerate(lines):
+            w = fm.horizontalAdvance(line)
+            x = -(w / 2.0 if hpos == 1 else w if hpos == 2 else 0.0)
+            painter.save()
+            painter.translate(QPointF(pos[0], pos[1]))
+            if item.rotation:
+                painter.rotate(-item.rotation)
+            painter.drawText(QPointF(x, y0 + i * line_h), line)
+            painter.restore()

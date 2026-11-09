@@ -230,19 +230,210 @@ def expand_bounds(a, b):
 
 
 _UCODE = re.compile(r"\\U\+([0-9A-Fa-f]{4})")
+# An MTEXT font descriptor such as {\fSimHei|b0|i0|c134|p49;DN15气动阀}
+# must contribute ONLY "DN15气动阀".  The old single-letter escape regex
+# stopped at the first letter of the font name and left the rest of the
+# control sequence on screen (the "{HY..." / "|b0|i0|c1|p0;\o\l" noise).
+_MTEXT_GROUPS = re.compile(
+    r"\\[fFhHwWcCqQtTaA][^;\\]*;|"      # font / height / width / colour / alignment
+    r"\\[pP][xXiIlLcCrR0-9.;+_-]*;|"   # paragraph / indent controls
+    r"\\[oOlLkKnNxX]|"                 # underline / overline / strike toggles
+    r"\\[AaFfHhWwQqTtCc][0-9.;+_-]*|"
+    r"\|[A-Za-z]\d*")                  # |b0 |i0 |c134 |p49 font attributes
+_STACK = re.compile(r"\\S([^;]*);")
+_LEADING_JUNK = re.compile(r"^[;{}\s]+")
 
 
 def decode_cad_text(text: str) -> str:
-    """Handle the common DXF/DWG text escapes without any font dependency."""
+    """Turn DXF/DWG text into plain, printable lines without font dependency.
+
+    Handles \\U+XXXX, MTEXT format groups, paragraph breaks, stacked fractions,
+    AutoCAD %% escapes and LibreDWG's leftover SHX control fragments.  Newlines
+    are preserved: a multi-line MTEXT must never be flattened into one endless
+    line across the sheet.
+    """
     if not text:
         return ""
     text = _UCODE.sub(lambda m: chr(int(m.group(1), 16)), text)
     text = text.replace("\\P", "\n").replace("\\p", "\n")
+    # Stacked fractions keep their human-readable numerator/denominator.
+    text = _STACK.sub(lambda m: m.group(1).replace("^", " ").replace("/", " / ")
+                      .replace("#", " / "), text)
+    text = _MTEXT_GROUPS.sub("", text)
+    text = text.replace("{", "").replace("}", "")
+    text = text.replace("\\~", " ")
     text = re.sub(r"\\[AaFfHhWwQqTtCc][0-9.;+_-]*", "", text)
+    text = re.sub(r"\\.", "", text)        # any remaining single-letter escape
     text = text.replace("%%c", "⌀").replace("%%d", "°").replace("%%p", "±")
     text = text.replace("%%C", "⌀").replace("%%D", "°").replace("%%P", "±")
-    text = text.replace("\\~", " ")
-    return text.strip()
+    out = []
+    for line in text.split("\n"):
+        line = _LEADING_JUNK.sub("", line)
+        line = re.sub(r"[;{}]+$", "", line).strip()
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+_FORMAT_MARKER = re.compile(
+    r"\\U\+|\\P|\\p|\\[fFhHwWcCqQtTaA]|\{\\|%%[cdpCDP]|\\S|\|b\d|\\o\\l")
+
+
+def visible_text_lines(text: str) -> list[str]:
+    """Printable lines only; pure formatting debris is not renderable text.
+
+    The DXF codec already decoded text once, so re-running the full escape
+    stripper here would damage literal backslashes. Only decode again when a
+    known control marker is actually present (e.g. a user-typed string).
+    """
+    raw = str(text or "")
+    if _FORMAT_MARKER.search(raw):
+        raw = decode_cad_text(raw)
+    out = []
+    for line in raw.split("\n"):
+        line = re.sub(r"^[;{}\s]+|[;{}\s]+$", "", line).strip()
+        if line and re.search(r"[\u3400-\u9fff]|[A-Za-z]{2,}|\d", line):
+            out.append(line)
+    return out
+
+
+def nurbs_points(control: Sequence[Point], knots: Sequence[float] | None = None,
+                 degree: int = 3, weights: Sequence[float] | None = None,
+                 per_span: int = 8, max_points: int = 400) -> list[Point]:
+    """Evaluate a (possibly rational) B-spline into a display polyline.
+
+    LibreDWG emits DXF SPLINE control points (10/20), a knot vector (40),
+    degree (71) and optional weights (41).  Drawing the control polygon instead
+    of the curve made every spline on a real sheet look like a scribble.  A
+    clamped uniform knot vector is synthesised when the source omits / corrupts
+    it, so a broken SPLINE still degrades to a sensible smooth curve.
+    """
+    ctrl = [(float(p[0]), float(p[1])) for p in control
+            if len(p) >= 2 and math.isfinite(p[0]) and math.isfinite(p[1])]
+    n = len(ctrl)
+    if n < 2:
+        return ctrl
+    p = max(1, min(int(degree), n - 1))
+    need = n + p + 1
+    u = [float(v) for v in (knots or [])
+         if math.isfinite(float(v))]
+    if len(u) != need or any(u[i + 1] < u[i] - 1e-9 for i in range(len(u) - 1)):
+        inner = need - 2 * (p + 1)
+        u = ([0.0] * (p + 1) +
+             [i / (inner + 1.0) for i in range(1, inner + 1)] +
+             [1.0] * (p + 1))
+    w = [float(x) if math.isfinite(float(x)) and float(x) > 0 else 1.0
+         for x in (weights or [])]
+    if len(w) != n:
+        w = [1.0] * n
+    hom = [(ctrl[i][0] * w[i], ctrl[i][1] * w[i], w[i]) for i in range(n)]
+
+    def de_boor(t: float) -> Point | None:
+        span = p
+        for idx in range(p, n):
+            if t < u[idx + 1]:
+                span = idx
+                break
+        else:
+            span = n - 1
+        d = [hom[j + span - p] for j in range(p + 1)]
+        for r in range(1, p + 1):
+            for j in range(p, r - 1, -1):
+                i = j + span - p
+                den = u[i + p - r + 1] - u[i]
+                alpha = 0.0 if abs(den) < EPS else (t - u[i]) / den
+                a, b = d[j - 1], d[j]
+                d[j] = ((1 - alpha) * a[0] + alpha * b[0],
+                        (1 - alpha) * a[1] + alpha * b[1],
+                        (1 - alpha) * a[2] + alpha * b[2])
+        h = d[p]
+        if abs(h[2]) < EPS:
+            return None
+        return (h[0] / h[2], h[1] / h[2])
+
+    start, end = u[p], u[n]
+    if end <= start + EPS:
+        return ctrl
+    spans: list[tuple[float, float]] = []
+    cursor = start
+    for idx in range(p, n):
+        nxt = u[idx + 1]
+        if nxt > cursor + EPS:
+            spans.append((cursor, min(nxt, end)))
+            cursor = nxt
+        if cursor >= end - EPS:
+            break
+    out: list[Point] = []
+    for lo, hi in spans:
+        steps = max(2, min(per_span, int(max_points / max(1, len(spans)))))
+        for k in range(steps):
+            q = de_boor(lo + (hi - lo) * k / steps)
+            if q and (not out or dist(out[-1], q) > 1e-9):
+                out.append(q)
+        if len(out) >= max_points:
+            break
+    last = de_boor(end)
+    if last and (not out or dist(out[-1], last) > 1e-9):
+        out.append(last)
+    return out if len(out) >= 2 else ctrl
+
+
+def hatch_pattern_lines(loops: Sequence[Sequence[Point]], spacing: float,
+                        angle_deg: float = 45.0,
+                        max_lines: int = 120) -> list[list[Point]]:
+    """Clip parallel hatch strokes against boundary loops (even-odd rule).
+
+    A HATCH boundary is *not* a solid filled region: painting it as one made
+    real drawings look like large white blobs.  Intersections from all loops
+    (outer boundary + holes) are sorted and paired, which reproduces the
+    even-odd hole behaviour without any rasterisation.
+    """
+    flat = [tuple(p[:2]) for loop in loops for p in loop if len(p) >= 2]
+    b = bounds_of(flat)
+    if not b or spacing <= 0 or not math.isfinite(spacing):
+        return []
+    x0, y0, x1, y1 = b
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    a = math.radians(angle_deg)
+    dx, dy = math.cos(a), math.sin(a)
+    nx, ny = -dy, dx
+    corners = ((x0, y0), (x1, y0), (x1, y1), (x0, y1))
+    ts = [nx * (x - cx) + ny * (y - cy) for x, y in corners]
+    t0, t1 = min(ts), max(ts)
+    if t1 - t0 < EPS:
+        return []
+    lines: list[list[Point]] = []
+    t = math.ceil(t0 / spacing) * spacing
+    while t <= t1 and len(lines) < max_lines:
+        hits: list[float] = []
+        for loop in loops:
+            pts = [tuple(p[:2]) for p in loop if len(p) >= 2]
+            if len(pts) < 2:
+                continue
+            for a_pt, b_pt in zip(pts, pts[1:] + pts[:1]):
+                ex, ey = b_pt[0] - a_pt[0], b_pt[1] - a_pt[1]
+                den = nx * ex + ny * ey
+                if abs(den) < EPS:
+                    continue
+                s = (t - (nx * (a_pt[0] - cx) + ny * (a_pt[1] - cy))) / den
+                if 0.0 <= s <= 1.0:
+                    px = a_pt[0] + s * ex
+                    py = a_pt[1] + s * ey
+                    hits.append(dx * (px - cx) + dy * (py - cy))
+        hits.sort()
+        merged: list[float] = []
+        for h in hits:
+            if not merged or h - merged[-1] > 1e-7:
+                merged.append(h)
+        for i in range(0, len(merged) - 1, 2):
+            s0, s1 = merged[i], merged[i + 1]
+            if s1 - s0 <= 1e-7:
+                continue
+            lines.append([(cx + dx * s0 + nx * t, cy + dy * s0 + ny * t),
+                          (cx + dx * s1 + nx * t, cy + dy * s1 + ny * t)])
+            if len(lines) >= max_lines:
+                break
+        t += spacing
+    return lines
 
 
 def format_length(value: float, units: int, precision: int = 4) -> str:

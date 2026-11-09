@@ -105,8 +105,8 @@ class DocumentSession:
             lines.append("进入编辑后按 2D 近似类型处理、几何可能失真："
                          + "、".join(f"{k} × {v}" for k, v in approx))
             if counts.get("SPLINE"):
-                lines.append("SPLINE 曲线会退化为控制点折线；圆弧段与填充边界"
-                             "同样只是近似")
+                lines.append("SPLINE 显示时求值 NURBS 曲线，但写回仍退化为 2D "
+                             "折线；HATCH 填充图案与 MTEXT 格式语义同样不还原")
         lines += [
             "经 DXF 中转，XDATA、代理对象、复杂块定义与 3D 实体不会原样回写",
             "编辑只作用于内存中的 2D 文档模型；保存/另存为始终锁定 "

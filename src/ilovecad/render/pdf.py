@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass
 
 from PySide6.QtCore import QMarginsF, QPointF, QRectF, Qt
-from PySide6.QtGui import (QBrush, QColor, QPageLayout, QPageSize,
+from PySide6.QtGui import (QBrush, QColor, QFontMetrics, QPageLayout, QPageSize,
                            QPainter, QPdfWriter, QPen, QPolygonF, QTransform)
 from PySide6.QtWidgets import QApplication
 
@@ -42,7 +42,7 @@ def _ensure_qt_app() -> None:
 class PdfOptions:
     paper: str = "A3"
     landscape: bool = True
-    scope: str = "全图"          # 全图 | 当前视图
+    scope: str = "全图"          # 全图 | 当前视图 | 完整范围
     scale_denominator: int = 100
     monochrome: bool = False
     include_measurements: bool = True
@@ -74,7 +74,10 @@ class PdfRenderer:
         pw, ph = writer.width(), writer.height()
         margin = 10.0 / 25.4 * dpi
         avail_w, avail_h = max(pw - 2 * margin, 1), max(ph - 2 * margin, 1)
-        b = view_bounds if options.scope == "当前视图" and view_bounds else dl.bounds
+        b = view_bounds if options.scope == "当前视图" and view_bounds else None
+        if b is None:
+            b = (dl.bounds if str(options.scope).startswith("完整范围") else
+                 (dl.fit_bounds or dl.bounds))
         if not b:
             b = (0.0, 0.0, 100.0, 100.0)
         model_w = max(b[2] - b[0], 1e-6)
@@ -127,21 +130,41 @@ class PdfRenderer:
         # Text is drawn untransformed so the y-axis flip cannot mirror glyphs.
         painter.setWorldTransform(QTransform())
         for item in dl.texts:
-            if not item.text:
+            if not item.text or item.height <= 0:
+                continue
+            lines = item.lines or [str(item.text).replace("\n", " ")]
+            if not lines or not any(lines):
                 continue
             dev = transform.map(QPointF(item.pos[0], item.pos[1]))
-            size_px = max(4, min(400, int(item.height * s)))
+            size_px = max(4, min(800, int(item.height * s)))
             font = drawing_font(pixel_size=size_px)
             painter.setFont(font)
+            fm = QFontMetrics(font)
             r, gg, bb = item.color
             painter.setPen(QColor(0, 0, 0) if options.monochrome else
                            (QColor(220, 60, 40) if item.annotation else QColor(r, gg, bb)))
-            painter.save()
-            painter.translate(dev)
-            if item.rotation:
-                painter.rotate(-item.rotation)
-            painter.drawText(0, 0, str(item.text).replace("\n", " "))
-            painter.restore()
+            line_h = size_px * 1.25
+            n = len(lines)
+            hpos = ((item.align - 1) % 3) if item.mtext else 0
+            if item.mtext and n > 1:
+                vpos = (item.align - 1) // 3
+                if vpos == 0:
+                    y0 = size_px * 0.85
+                elif vpos == 1:
+                    y0 = -(n - 1) * line_h / 2.0
+                else:
+                    y0 = -(n - 1) * line_h - size_px * 0.15
+            else:
+                y0 = 0.0
+            for i, line in enumerate(lines):
+                w = fm.horizontalAdvance(line)
+                x = -(w / 2.0 if hpos == 1 else w if hpos == 2 else 0.0)
+                painter.save()
+                painter.translate(dev)
+                if item.rotation:
+                    painter.rotate(-item.rotation)
+                painter.drawText(QPointF(x, y0 + i * line_h), line)
+                painter.restore()
 
         painter.end()
         effective = (px_per_mm * unit_mm) / s if s else 0.0
