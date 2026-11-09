@@ -9,6 +9,7 @@ from PySide6.QtGui import QBrush, QColor, QFontMetrics, QPen, QPolygonF
 
 from .displaylist import DisplayList
 from ..fonts import drawing_font
+from ..model import geometry as geo
 from .view import ViewTransform
 
 
@@ -61,19 +62,10 @@ def paint_display_list(painter, dl: DisplayList, view: ViewTransform,
         fm = QFontMetrics(font)
         r, g, b = item.color
         painter.setPen(QColor(230, 90, 40) if item.annotation else QColor(r, g, b))
-        line_h = size * 1.25 * item.line_spacing
-        n = len(lines)
+        offsets = geo.text_baselines(len(lines), size, fm.ascent(), fm.descent(),
+                                   item.line_spacing, item.align,
+                                   item.baseline)
         hpos = (item.align - 1) % 3
-        vpos = (item.align - 1) // 3
-        if n > 1:
-            if vpos == 0:
-                y0 = size * 0.85
-            elif vpos == 1:
-                y0 = -(n - 1) * line_h / 2.0
-            else:
-                y0 = -(n - 1) * line_h - size * 0.15
-        else:
-            y0 = 0.0
         for i, line in enumerate(lines):
             w = fm.horizontalAdvance(line)
             x = -(w / 2.0 if hpos == 1 else w if hpos == 2 else 0.0)
@@ -85,5 +77,5 @@ def paint_display_list(painter, dl: DisplayList, view: ViewTransform,
                 painter.scale(item.width_scale, 1.0)
             if abs(item.oblique) > 0.5:
                 painter.shear(math.tan(math.radians(item.oblique)), 0.0)
-            painter.drawText(QPointF(x, y0 + i * line_h), line)
+            painter.drawText(QPointF(x, offsets[i]), line)
             painter.restore()

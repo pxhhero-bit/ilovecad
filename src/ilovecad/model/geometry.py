@@ -353,6 +353,35 @@ def adaptive_text_height(height: float, cap: float | None) -> float:
     return cap + (height - cap) * 0.03
 
 
+def text_baselines(n: int, size: float, ascent: float, descent: float,
+                   line_spacing: float = 1.0, align: int = 1,
+                   baseline: bool = False) -> list[float]:
+    """Per-line baseline offsets (y-down device pixels) from the insert point.
+
+    CAD insert points are NOT Qt baselines:
+
+    * MTEXT attachment 1..3 (top): the insert point is the TOP of the text
+      box, so the first baseline sits one font-ascent BELOW it.  Drawing at
+      y=0 puts the whole label above its title-block cell -- exactly the
+      "文字位置不对" symptom on real sheets.
+    * attachment 4..6 (middle): the box is vertically centred on the point.
+    * attachment 7..9 (bottom): the box bottom is at the point.
+    * TEXT with group 73=0 is baseline-justified and needs no offset at all.
+
+    Both the screen and the PDF path call this so they cannot drift apart.
+    """
+    n = max(1, int(n))
+    line_h = size * 1.25 * max(0.5, min(3.0, line_spacing))
+    vpos = (max(1, min(9, int(align))) - 1) // 3
+    if vpos == 0:                       # top
+        y0 = ascent
+    elif vpos == 1:                     # middle
+        y0 = (ascent - descent) / 2.0 - (n - 1) * line_h / 2.0
+    else:                               # bottom / baseline
+        y0 = -(n - 1) * line_h - (0.0 if baseline else descent)
+    return [y0 + i * line_h for i in range(n)]
+
+
 def wrap_text_lines(lines, max_chars: int) -> list[str]:
     """Wrap MTEXT lines to its reference rectangle width (character units)."""
     if max_chars <= 0:

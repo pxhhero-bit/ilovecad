@@ -448,6 +448,7 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
                                          "height": 2000.0, "mtext": True}))
     cap = big.text_height_cap()
     assert cap and cap < 10000
+    big.text_height_mode = "auto"      # opt-in compression is no longer default
     auto = build(big)
     heights = [t.height for t in auto.texts]
     assert len(heights) == 2 and heights[0] > heights[1] > cap, \
@@ -463,6 +464,57 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     big.text_height_mode = "auto"
     checks["text_height_cap"] = round(cap, 3)
     checks["text_hierarchy"] = [round(h, 1) for h in heights]
+
+    step("渲染回归：旧式 MTEXT 分组码按 DWG 原生字段修复")
+    from ilovecad.kernel.native_text import (apply_native_text,
+                                             legacy_mtext_dialect)
+
+    def mtext_dxf(pairs):
+        body = [("0", "SECTION"), ("2", "ENTITIES")] + pairs + [
+            ("0", "ENDSEC"), ("0", "EOF")]
+        return "".join(f"{c}\n{v}\n" for c, v in body).encode("utf-8")
+
+    legacy = mtext_dxf([
+        ("0", "MTEXT"), ("5", "A1"), ("8", "0"), ("10", "100"),
+        ("20", "50"), ("40", "3357.4"), ("41", "0.0"),
+        ("44", "3357.4"), ("71", "2"), ("72", "1"),
+        ("1", "AWLF-004")])
+    standard = mtext_dxf([
+        ("0", "MTEXT"), ("5", "A1"), ("8", "0"), ("10", "100"),
+        ("20", "50"), ("40", "89.43"), ("41", "3357.4"),
+        ("44", "1.0"), ("71", "1"), ("1", "AWLF-004")])
+    assert legacy_mtext_dialect(legacy), "failed to spot legacy MTEXT codes"
+    assert not legacy_mtext_dialect(standard), \
+        "standard MTEXT codes were mistaken for the legacy dialect"
+    bad, _ = parse_dxf(legacy)
+    assert bad.entities[0].data["height"] == 3357.4
+    assert bad.entities[0].data["align"] == 1, \
+        "legacy group 72 attachment was not recovered"
+    good, _ = parse_dxf(standard)
+    assert abs(good.entities[0].data["height"] - 89.43) < 1e-6
+    assert good.entities[0].data["column_chars"] > 20, \
+        "MTEXT group 41 was not interpreted as a drawing-unit rectangle width"
+    fixed = apply_native_text(bad, {0xA1: {
+        "kind": "MTEXT", "height": 89.43, "align": 1,
+        "rect_width": 3357.4, "line_spacing": 1.0,
+        "ins_pt": [100.0, 50.0, 0.0], "text": "AWLF-004"}})
+    assert fixed == 1
+    assert abs(bad.entities[0].data["height"] - 89.43) < 1e-6
+    assert bad.entities[0].data["align"] == 1
+
+    framed = DwgDocument()
+    corners = [(0.0, 0.0), (10000.0, 0.0), (10000.0, 7000.0), (0.0, 7000.0)]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        framed.add(Entity(0, "LINE", "0", data={"a": a, "b": b}))
+    for i in range(60):
+        framed.add(Entity(0, "LINE", "0",
+                          data={"a": (i * 100.0, 1000.0),
+                                "b": (i * 100.0, 2000.0)}))
+    framed.add(Entity(0, "LINE", "0",
+                      data={"a": (20000.0, 20000.0),
+                            "b": (20100.0, 20000.0)}))
+    assert framed.sheet_frame_bounds() == (0.0, 0.0, 10000.0, 7000.0), \
+        "sheet border rectangle was not detected for zoom extents"
 
     step("真实图纸：主体图幅视图 / 无格式码 / 无实心填充 / PDF 完整范围")
     real = Path(os.environ.get("ILOVECAD_REAL_DRAWING", ""))
@@ -493,12 +545,41 @@ def render_checks(kernel: LibreDwgKernel, result: dict) -> dict:
         heights = {round(t.height, 1) for t in rdl.texts}
         assert len(families) >= 3, "all labels fell back to one font family"
         assert len(heights) >= 8, "all labels were flattened to one size"
-        assert max(t.source_height for t in rdl.texts) > 1000
-        d.text_height_mode = "exact"
+        # dwgread -O DXF used to write the MTEXT reference-rectangle WIDTH
+        # into group 40.  A 89-unit title-block label became 3357 units.
+        # dwg2dxf's standard DXF codes must keep the native text heights.
+        assert max(t.source_height for t in rdl.texts) < 500, \
+            "legacy MTEXT dialect still inflates text heights"
+        title = [e for e in d.entities
+                 if "AWLF-004" in str(e.data.get("text", ""))]
+        assert title and 80.0 < title[0].data["height"] < 100.0, \
+            "title-block MTEXT height was not restored from the DWG"
+        assert title[0].data["align"] == 1, \
+            "MTEXT attachment point was not restored"
+        assert d.text_height_mode == "exact", \
+            "viewer default must show the source font sizes 1:1"
         exact_dl = build(d)
-        assert any(t.height > 1000 for t in exact_dl.texts), \
-            "exact 1:1 text heights were still compressed"
+        assert len(exact_dl.texts) == len(rdl.texts)
+        assert all(abs(a.height - b.height) < 1e-9
+                   for a, b in zip(exact_dl.texts, rdl.texts)), \
+            "default display is not the exact 1:1 source size"
         d.text_height_mode = "auto"
+        auto_dl = build(d)
+        assert any(abs(a.height - b.height) > 1e-6
+                   for a, b in zip(auto_dl.texts, exact_dl.texts)), \
+            "opt-in adaptive mode no longer compresses pathological heights"
+        # Top-attached MTEXT must be drawn BELOW its insertion point, not
+        # above it; bottom / baseline TEXT must not be shifted at all.
+        top = g.text_baselines(1, 100.0, 85.0, 25.0, 1.0, 1)
+        bottom = g.text_baselines(1, 100.0, 85.0, 25.0, 1.0, 8,
+                                  baseline=True)
+        assert top[0] > 50 and bottom[0] == 0.0, \
+            "MTEXT baseline offsets ignore the attachment point"
+        frame = d.sheet_frame_bounds()
+        assert frame and frame == fit_bounds, \
+            "real sheet frame was not detected / used for zoom extents"
+        assert "艾力威" in "".join(all_lines), \
+            "right-hand title-block column was cropped out of the sheet"
         full_pdf = WORK / "render_full_extent.pdf"
         PdfRenderer.export(str(full_pdf), d, rdl,
                            PdfOptions(paper="A3", scope="完整范围"), None)

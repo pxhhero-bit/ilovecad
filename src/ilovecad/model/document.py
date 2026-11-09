@@ -38,15 +38,28 @@ def _dominant_bounds(items, trim: float = 0.02):
 
     n_cells = 64
     cells: Counter = Counter()
-    cell_of: list[tuple[int, int]] = []
+    cell_of: list[set[tuple[int, int]]] = []
     xs: list[float] = []
     ys: list[float] = []
     for b in items:
         cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
-        ix = min(n_cells - 1, max(0, int((cx - full[0]) / fw * (n_cells - 1))))
-        iy = min(n_cells - 1, max(0, int((cy - full[1]) / fh * (n_cells - 1))))
-        cells[(ix, iy)] += 1
-        cell_of.append((ix, iy))
+        # A long frame / border line has its CENTRE in the middle of the sheet,
+        # but its two ends define the sheet edges.  Binning only the centre
+        # leaves those edge cells empty, so the flood fill quietly dropped the
+        # right border and the bottom title-block row from zoom-extents.
+        # Sampling the bbox corners as well keeps long lines attached to the
+        # main sheet without merging genuinely separate sheets.
+        samples = ((cx, cy), (b[0], b[1]), (b[2], b[1]),
+                   (b[0], b[3]), (b[2], b[3]))
+        owned: set[tuple[int, int]] = set()
+        for px, py in samples:
+            ix = min(n_cells - 1, max(0, int((px - full[0]) / fw * (n_cells - 1))))
+            iy = min(n_cells - 1, max(0, int((py - full[1]) / fh * (n_cells - 1))))
+            key = (ix, iy)
+            if key not in owned:
+                owned.add(key)
+                cells[key] += 1
+        cell_of.append(owned)
         xs.extend((b[0], b[2]))
         ys.extend((b[1], b[3]))
     peak, peak_count = cells.most_common(1)[0]
@@ -64,7 +77,7 @@ def _dominant_bounds(items, trim: float = 0.02):
                     if nb in cells and nb not in seen:
                         seen.add(nb)
                         queue.append(nb)
-        chosen = [items[i] for i, c in enumerate(cell_of) if c in seen]
+        chosen = [items[i] for i, owned in enumerate(cell_of) if owned & seen]
         if len(chosen) >= max(20, len(items) * 0.5):
             b = chosen[0]
             for other in chosen[1:]:
@@ -108,9 +121,9 @@ class DwgDocument:
     entities: list[Entity] = field(default_factory=list)
     measurements: list[dict] = field(default_factory=list)
     # Local viewer-only text preferences. Neither value is ever written back
-    # to the source file: "exact" = source heights 1:1, "auto" = rank-preserving
-    # compression of pathologically large titles; text_scale is a user dial.
-    text_height_mode: str = "auto"
+    # to the source file.  "exact" (default) = source heights 1:1; "auto" is
+    # an opt-in compression for exporters that emit pathological text heights.
+    text_height_mode: str = "exact"
     text_scale: float = 1.0
     skipped: Counter = field(default_factory=Counter)
     notes: list[str] = field(default_factory=list)
@@ -205,6 +218,86 @@ class DwgDocument:
             b = g.expand_bounds(b, e.bounds(cap, self.text_scale))
         return b
 
+    def sheet_frame_bounds(self):
+        """Bounds of the dominant sheet's rectangular border, if it has one.
+
+        A dense-cluster fit cannot see a large, sparse frame: the four border
+        lines have their centres far from the dense geometry, so the flood fill
+        leaves the outer frame (and the title block attached to its right edge)
+        outside zoom-extents.  Real sheets have two nested axis-aligned
+        rectangles (paper border + drawing frame).  Detect candidate rectangles
+        from long axis-aligned lines, then keep the smallest one that contains
+        essentially all of the sheet's entities.
+        """
+        full = self.bounds()
+        if not full:
+            return None
+        fw, fh = full[2] - full[0], full[3] - full[1]
+        if fw <= 1e-9 or fh <= 1e-9:
+            return None
+        min_len = 0.18 * max(fw, fh)
+        hs: set[tuple[float, float, float]] = set()
+        vs: set[tuple[float, float, float]] = set()
+        for e in self.entities:
+            if e.kind == "LINE":
+                segs = [(tuple(e.data["a"]), tuple(e.data["b"]))]
+            elif e.kind in ("LWPOLYLINE", "POLYLINE"):
+                pts = [tuple(p[:2]) for p in e.data.get("pts", [])]
+                if len(pts) < 2:
+                    continue
+                segs = list(zip(pts, pts[1:]))
+                if e.data.get("closed") and len(pts) > 2:
+                    segs.append((pts[-1], pts[0]))
+            else:
+                continue
+            for (x1, y1), (x2, y2) in segs:
+                if abs(y1 - y2) < 1e-6 and abs(x2 - x1) >= min_len:
+                    hs.add((round(y1, 4), round(min(x1, x2), 4),
+                            round(max(x1, x2), 4)))
+                if abs(x1 - x2) < 1e-6 and abs(y2 - y1) >= min_len:
+                    vs.add((round(x1, 4), round(min(y1, y2), 4),
+                            round(max(y1, y2), 4)))
+        if len(hs) < 2 or len(vs) < 2:
+            return None
+        eps = max(fw, fh) * 1e-5
+        candidates = []
+        hl, vl = sorted(hs), sorted(vs)
+        for yi, (y1, a1, b1) in enumerate(hl):
+            for y2, a2, b2 in hl[yi + 1:]:
+                if y2 - y1 < min_len:
+                    continue
+                for xi, (x1, c1, d1) in enumerate(vl):
+                    for x2, c2, d2 in vl[xi + 1:]:
+                        if x2 - x1 < min_len:
+                            continue
+                        if not (a1 <= x1 + eps and b1 >= x2 - eps and
+                                a2 <= x1 + eps and b2 >= x2 - eps and
+                                c1 <= y1 + eps and d1 >= y2 - eps and
+                                c2 <= y1 + eps and d2 >= y2 - eps):
+                            continue
+                        candidates.append((x1, y1, x2, y2))
+        if not candidates:
+            return None
+        centres = []
+        for e in self.entities:
+            b = e.bounds()
+            if b:
+                centres.append(((b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0))
+        if len(centres) < 40:
+            return None
+
+        def score(rect):
+            x0, y0, x1, y1 = rect
+            return sum(1 for cx, cy in centres
+                       if x0 <= cx <= x1 and y0 <= cy <= y1)
+
+        best = max(score(r) for r in candidates)
+        if best < max(40, len(centres) * 0.5):
+            return None
+        # Prefer the tighter frame: both nested borders contain the same sheet.
+        good = [r for r in candidates if score(r) >= best * 0.98]
+        return min(good, key=lambda r: (r[2] - r[0]) * (r[3] - r[1]))
+
     def robust_bounds(self, trim: float = 0.02):
         """Return ``(bounds, ignored_count)`` for a usable "zoom extents".
 
@@ -214,6 +307,19 @@ class DwgDocument:
         cluster is used instead; FITALL / PDF「完整范围」still use
         :meth:`bounds` and therefore include every object.
         """
+        frame = self.sheet_frame_bounds()
+        if frame:
+            cap = self._text_cap()
+            ignored = 0
+            for e in self.entities:
+                b = e.bounds(cap, self.text_scale)
+                if not b:
+                    continue
+                cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+                if not (frame[0] <= cx <= frame[2] and
+                        frame[1] <= cy <= frame[3]):
+                    ignored += 1
+            return frame, ignored
         cap = self._text_cap()
         items = []
         for e in self.entities:
@@ -228,9 +334,11 @@ class DwgDocument:
             # A title block usually sits below the dense geometry of the same
             # sheet.  Its few text entities form no dense grid cell of their
             # own, so the flood fill can leave them just outside the fit and
-            # cut the sheet title in half.  Pull back any text whose centre is
+            # cut the sheet title in half.  Pull back every entity of that
+            # sheet (text AND the thin frame / cell lines) whose centre lies
             # inside the sheet's horizontal span and not absurdly far above /
-            # below it; the remote sheet at x~0 stays excluded.
+            # below it; remote sheets stay excluded.  Text alone used to leave
+            # the right border and bottom cell row outside the fit.
             x0, y0, x1, y1 = cluster
             w, h = x1 - x0, y1 - y0
             lo_y, hi_y = y0 - 1.5 * h, y1 + 1.5 * h
@@ -244,6 +352,26 @@ class DwgDocument:
                 if (x0 - 0.1 * w <= cx <= x1 + 0.1 * w and
                         lo_y <= cy <= hi_y):
                     cluster = g.expand_bounds(cluster, b)
+            # The title-block GRID lines sit just outside the fitted box.  Add
+            # nearby geometry with a tight 2% margin, clamping each entity's
+            # box to that margin so a stray full-width line (or the next
+            # sheet) cannot drag zoom-extents back out to the whole model.
+            x0, y0, x1, y1 = cluster
+            w, h = x1 - x0, y1 - y0
+            mx, my = max(w * 0.02, 1.0), max(h * 0.02, 1.0)
+            region = (x0 - mx, y0 - my, x1 + mx, y1 + my)
+            for e in self.entities:
+                if e.kind in ("TEXT", "MTEXT", "DIMENSION"):
+                    continue
+                b = e.bounds(cap, self.text_scale)
+                if not b:
+                    continue
+                cx, cy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+                if region[0] <= cx <= region[2] and region[1] <= cy <= region[3]:
+                    clipped = (max(b[0], region[0]), max(b[1], region[1]),
+                               min(b[2], region[2]), min(b[3], region[3]))
+                    if clipped[0] < clipped[2] or clipped[1] < clipped[3]:
+                        cluster = g.expand_bounds(cluster, clipped)
             ignored = sum(1 for b in items
                           if b[2] < cluster[0] or b[0] > cluster[2] or
                           b[3] < cluster[1] or b[1] > cluster[3])

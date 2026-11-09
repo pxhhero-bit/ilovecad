@@ -36,6 +36,7 @@ class PaintText:
     lines: list[str] = field(default_factory=list)
     align: int = 1               # attachment point 1..9 (MTEXT 71 / TEXT 72+73)
     mtext: bool = False
+    baseline: bool = False       # TEXT group 73=0: insertion IS the baseline
     families: list[str] = field(default_factory=list)
     width_scale: float = 1.0
     oblique: float = 0.0
@@ -134,6 +135,7 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
                     rotation=float(d.get("rotation", 0.0)),
                     lines=lines, align=max(1, min(9, int(d.get("align", 1) or 1))),
                     mtext=bool(d.get("mtext")),
+                    baseline=bool(d.get("baseline", False)),
                     families=font_families(d.get("font", ""),
                                            d.get("bigfont", ""),
                                            d.get("inline_font", ""),

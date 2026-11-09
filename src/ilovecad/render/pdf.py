@@ -147,19 +147,10 @@ class PdfRenderer:
             r, gg, bb = item.color
             painter.setPen(QColor(0, 0, 0) if options.monochrome else
                            (QColor(220, 60, 40) if item.annotation else QColor(r, gg, bb)))
-            line_h = size_px * 1.25 * item.line_spacing
-            n = len(lines)
+            offsets = g.text_baselines(len(lines), size_px, fm.ascent(),
+                                       fm.descent(), item.line_spacing,
+                                       item.align, item.baseline)
             hpos = (item.align - 1) % 3
-            vpos = (item.align - 1) // 3
-            if n > 1:
-                if vpos == 0:
-                    y0 = size_px * 0.85
-                elif vpos == 1:
-                    y0 = -(n - 1) * line_h / 2.0
-                else:
-                    y0 = -(n - 1) * line_h - size_px * 0.15
-            else:
-                y0 = 0.0
             for i, line in enumerate(lines):
                 w = fm.horizontalAdvance(line)
                 x = -(w / 2.0 if hpos == 1 else w if hpos == 2 else 0.0)
@@ -171,7 +162,7 @@ class PdfRenderer:
                     painter.scale(item.width_scale, 1.0)
                 if abs(item.oblique) > 0.5:
                     painter.shear(math.tan(math.radians(item.oblique)), 0.0)
-                painter.drawText(QPointF(x, y0 + i * line_h), line)
+                painter.drawText(QPointF(x, offsets[i]), line)
                 painter.restore()
 
         painter.end()

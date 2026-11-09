@@ -125,10 +125,10 @@ def load_text_settings() -> tuple[str, float]:
     try:
         s = _settings()
         return sanitize_text_settings(
-            s.value(_KEY_TEXT_MODE, "auto"),
+            s.value(_KEY_TEXT_MODE, "exact"),
             s.value(_KEY_TEXT_SCALE, 1.0))
     except Exception:
-        return "auto", 1.0
+        return "exact", 1.0
 
 
 def save_text_settings(mode, scale) -> tuple[str, float]:

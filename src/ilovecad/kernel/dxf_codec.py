@@ -185,6 +185,7 @@ def _parse_entity(kind: str, groups) -> Entity | None:
         fmt = g.parse_mtext_format(raw_text) if is_mtext else {}
         style = _first(groups, "7", "Standard") or "Standard"
         align = 1
+        baseline = False          # TEXT with group 73=0 sits on the baseline
         raw_height = abs(_num(groups, "40", 0.0))
         height = raw_height if raw_height > 1e-6 else 0.0
         if fmt.get("absolute_height", 0.0) > 0:
@@ -200,11 +201,25 @@ def _parse_entity(kind: str, groups) -> Entity | None:
         elif is_mtext:
             # MTEXT group 11/21 is the X-axis direction vector, NOT a point.
             p = (_num(groups, "10"), _num(groups, "20"))
-            align = int(_num(groups, "71", 1)) or 1
+            a71 = int(_num(groups, "71", 0))
+            a72 = int(_num(groups, "72", 0))
+            g40 = abs(_num(groups, "40", 0.0))
+            g44 = _num(groups, "44", 1.0)
+            legacy = ((g44 > 8 and (abs(g40 - g44) < 1e-6 or g40 > 1000))
+                      or (a71 == 0 and 1 <= a72 <= 9))
+            # Standard DXF: 71 = attachment (1..9), 72 = drawing direction.
+            # LibreDWG's legacy writer shifts the attachment into 72 and
+            # writes 0 / 2 into 71, which pushed top-left labels to the wrong
+            # side of their title-block cell.
+            if legacy and 1 <= a72 <= 9:
+                align = a72
+            else:
+                align = a71 if 1 <= a71 <= 9 else 1
         else:
             # TEXT group 11/21 is the alignment point when 72/73 are non-zero.
             hjust = int(_num(groups, "72", 0))
             vjust = int(_num(groups, "73", 0))
+            baseline = vjust == 0
             hpos = {0: 0, 1: 1, 2: 2, 3: 0, 4: 1, 5: 1}.get(hjust, 0)
             vpos = {0: 2, 1: 2, 2: 1, 3: 0}.get(vjust, 2)
             align = vpos * 3 + hpos + 1
@@ -215,15 +230,18 @@ def _parse_entity(kind: str, groups) -> Entity | None:
                     p = ap
         if is_mtext:
             align = max(1, min(9, align))
-        # LibreDWG writes MTEXT group 41 as the reference-rectangle width in
-        # TEXT-HEIGHT units (e.g. 56.03 x a 162.8 height = one A3 sheet).
-        # TEXT group 41 is the relative width factor instead.
+        # Standard DXF: MTEXT group 41 is the reference rectangle width in
+        # DRAWING UNITS.  Treating it as a character count (as the legacy
+        # LibreDWG dialect suggested) wraps nothing or wraps far too early.
+        # TEXT group 41 is a relative width factor instead.
         g41 = _num(groups, "41", 0.0)
         width_factor = g41 if (not is_mtext and g41 > 0) else 0.0
-        column_chars = g41 if is_mtext else 0.0
-        line_spacing = _num(groups, "44", 1.0)
-        if line_spacing > 8 and height > 0:
-            line_spacing /= height
+        column_chars = (g41 / (height * 0.6)
+                        if is_mtext and g41 > 0 and height > 0 else 0.0)
+        # Group 44 is a RELATIVE line-spacing factor (normally 1.0).  Values
+        # above 8 come from the legacy converter repeating the rectangle width.
+        g44 = _num(groups, "44", 1.0)
+        line_spacing = 1.0 if g44 > 8 else g44
         line_spacing = max(0.5, min(3.0, line_spacing or 1.0))
         d = {"p": p,
              "text": g.decode_cad_text(raw_text),
@@ -241,7 +259,7 @@ def _parse_entity(kind: str, groups) -> Entity | None:
              "strikeout": fmt.get("strikeout", False),
              "column_chars": column_chars,
              "line_spacing": line_spacing,
-             "align": align,
+             "align": align, "baseline": baseline,
              "mtext": is_mtext, "dimension": is_dim,
              "source_kind": kind}
         if fmt.get("align") is not None and is_mtext:
@@ -334,6 +352,11 @@ def _parse_entity(kind: str, groups) -> Entity | None:
              "rotation": _num(groups, "50")}
     else:
         return None
+    handle = _first(groups, "5", "") or ""
+    try:
+        d["handle"] = int(str(handle).strip(), 16)
+    except ValueError:
+        d["handle"] = 0
     return Entity(0, kind, c["layer"], c["color"], c["linetype"],
                   c["lineweight"], d)
 

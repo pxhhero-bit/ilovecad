@@ -102,7 +102,7 @@ class SettingsDialog(QDialog):
     def __init__(self, current_theme: str, snap_config: SnapConfig | None = None,
                  parent=None, *, units: int = DEFAULT_UNITS,
                  precision: int = DEFAULT_PRECISION,
-                 text_mode: str = "auto", text_scale: float = 1.0):
+                 text_mode: str = "exact", text_scale: float = 1.0):
         super().__init__(parent)
         self.ui = load_ui(self, "settings")
         _localize_button_box(self.ui.buttonBox)
@@ -120,7 +120,7 @@ class SettingsDialog(QDialog):
             lambda: self._load_units(DEFAULT_UNITS, DEFAULT_PRECISION))
         self._load_text(text_mode, text_scale)
         self.ui.btnTextDefaults.clicked.connect(
-            lambda: self._load_text("auto", 1.0))
+            lambda: self._load_text("exact", 1.0))
         self.ui.buttonBox.accepted.connect(self.accept)
         self.ui.buttonBox.rejected.connect(self.reject)
 
@@ -1103,7 +1103,7 @@ class MainWindow(QMainWindow):
             "      锁定图层仍可见可捕捉，但不能被选中编辑\n"
             "测量：DI / DIST、CHAIN、AREA、R、ANG / DAN（三点夹角）、AL / ANGLELINE（两线夹角）\n"
             "设置：THEME / SETTINGS / OP 主题与对象捕捉；OSNAP 捕捉页；UNITS 单位与精度页\n"
-            "      STYLE / FONT 文字与字体页（字高原样 1:1 或自适应、显示倍率）\n"
+            "      STYLE / FONT 文字与字体页（字高默认原样 1:1，可选自适应与显示倍率）\n"
             "帮助：HELP / ? 显示本说明\n"
             "\n测量结果列表：单击高亮，双击定位，右键可删除单条 / 复制数值 / 导出 CSV。\n"
             "鼠标：滚轮缩放，中键或「平移」模式左键拖动平移，Esc 取消当前命令。\n")

@@ -21,6 +21,8 @@ from ..model.session import (DocumentSession, READONLY, sha256_file)
 from ..version import (MAX_DIRECT_READ_VERSION, TARGET_VERSION,
                        TARGET_VERSION_FLAG, VERSION_LABELS, VERSION_ORDER)
 from .dxf_codec import normalize_newlines, parse_dxf, write_dxf
+from .native_text import (apply_native_text, legacy_mtext_dialect,
+                          load_native_text)
 
 ROOT = Path(__file__).resolve().parents[3]
 TP = ROOT / "third_party" / "libredwg"
@@ -117,7 +119,8 @@ class LibreDwgKernel:
                 "或在 Linux/macOS 上从源码构建 LibreDWG >= 0.14.1。")
         return path
 
-    def _run(self, name: str, args: list[str], timeout: int = PROCESS_TIMEOUT) -> str:
+    def _run(self, name: str, args: list[str], timeout: int = PROCESS_TIMEOUT,
+             allow_log_errors: bool = False) -> str:
         cmd = [self._tool(name)] + [str(a) for a in args]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         try:
@@ -126,7 +129,11 @@ class LibreDwgKernel:
         except subprocess.TimeoutExpired as exc:
             raise KernelError(f"{name} 超时（{timeout}s），已终止；文件可能损坏或过大。") from exc
         out = (proc.stdout + proc.stderr).decode("utf-8", errors="replace")
-        if proc.returncode != 0 or "SUCCESS" not in out and "ERROR" in out:
+        # dwg2dxf reports non-fatal proxy-object "ERROR:" lines on real R2018
+        # sheets while still writing a complete DXF and exiting 0.  Only the
+        # produced file is authoritative for that tool.
+        if proc.returncode != 0 or (not allow_log_errors and
+                                    "SUCCESS" not in out and "ERROR" in out):
             raise KernelError(f"{name} 执行失败：\n{out.strip()[-1200:]}")
         return out
 
@@ -145,10 +152,26 @@ class LibreDwgKernel:
         return VERSION_ORDER.index(v) if v in VERSION_ORDER else -1
 
     def _read_to_dxf(self, source: Path, dest: Path) -> None:
-        self._run("dwgread", ["-O", "DXF", "-o", str(dest), str(source)])
+        """DWG -> ASCII DXF using the full-fidelity ``dwg2dxf`` writer.
+
+        ``dwgread -O DXF`` uses a legacy MTEXT dialect where group 40 is the
+        reference rectangle width instead of the text height.  Rendering that
+        value makes title-block labels tens of times too large and shifts them
+        out of their cells.  ``dwg2dxf`` emits the standard DXF group codes.
+        """
+        try:
+            self._run("dwg2dxf", ["-y", "-o", str(dest), str(source)],
+                      allow_log_errors=True)
+        except KernelError:
+            # Older / self-built LibreDWG packages may lack dwg2dxf.  The
+            # legacy output is still usable; native_text.py repairs MTEXT.
+            self._run("dwgread", ["-O", "DXF", "-o", str(dest), str(source)])
         if not dest.exists() or dest.stat().st_size == 0:
-            raise KernelError("dwgread 未产生 DXF 数据")
-        dest.write_bytes(normalize_newlines(dest.read_bytes()))
+            raise KernelError("转换器未产生 DXF 数据")
+        data = normalize_newlines(dest.read_bytes())
+        if b"EOF" not in data[-4096:]:
+            raise KernelError("DXF 输出不完整（缺少 EOF 结束标记）")
+        dest.write_bytes(data)
 
     def _downgrade(self, source: Path, work: Path) -> Path:
         """Source-side downgrade: high-version DWG -> DXF -> R2004 DWG."""
@@ -215,15 +238,23 @@ class LibreDwgKernel:
                 need_downgrade = (source_version and
                                   self._version_index(source_version) >
                                   self._version_index(MAX_DIRECT_READ_VERSION))
-                read_from = source
-                if need_downgrade:
+                dxf = work / "final.dxf"
+                direct_error = None
+                try:
+                    self._read_to_dxf(source, dxf)
+                except KernelError as exc:
+                    direct_error = str(exc)
+
+                if direct_error and need_downgrade:
                     report.steps.append(
-                        f"检测到高版本 {source_version}，触发源头降版本兜底")
+                        f"检测到高版本 {source_version}，直接解码失败，触发源头降版本兜底")
                     try:
-                        read_from = self._downgrade(source, work)
+                        low = self._downgrade(source, work)
+                        self._read_to_dxf(low, dxf)
+                        direct_error = None
                         report.downgraded = True
                         report.effective_version = TARGET_VERSION
-                        report.steps.append("dwgread -O DXF → 规范化换行 → dwgwrite --as r2004")
+                        report.steps.append("dwg2dxf → dwgwrite --as r2004 → dwg2dxf")
                         report.steps.append("临时副本文件头已校验为 AC1018，原文件未被改写")
                     except KernelError as exc:
                         converted = self._external_convert(source, work)
@@ -231,25 +262,38 @@ class LibreDwgKernel:
                             raise KernelError(
                                 f"高版本 {source_version} 的源头降版本失败：{exc}\n"
                                 "可自备外部转换器并通过环境变量 ILOVECAD_EXTERNAL_CONVERTER 指定。")
-                        read_from = converted
+                        self._read_to_dxf(converted, dxf)
+                        direct_error = None
                         report.downgraded = True
                         report.effective_version = TARGET_VERSION
                         report.steps.append("已使用用户自备的外部转换器降版本（未随本软件分发）")
                         report.warnings.append("使用了外部转换器，请自行核对其许可与输出精度")
+                elif direct_error:
+                    raise KernelError(f"LibreDWG 无法解码该文件：\n{direct_error}")
                 else:
                     report.steps.append(
-                        f"版本 {source_version or '未知'} 不高于 AC1018，直接解码")
+                        f"版本 {source_version or '未知'} 由 dwg2dxf 直接解码为完整 DXF"
+                        "（MTEXT 字高 / 附着点为标准分组码）")
                     report.effective_version = source_version or TARGET_VERSION
 
-                dxf = work / "final.dxf"
-                try:
-                    self._read_to_dxf(read_from, dxf)
-                except KernelError as exc:
-                    raise KernelError(f"LibreDWG 无法解码该文件：\n{exc}") from exc
-                report.steps.append("dwgread -O DXF 输出并规范化 CR CR LF 换行")
                 import_dxf = dxf.read_bytes()
                 doc, parsed = parse_dxf(import_dxf)
                 report.steps.append("DXF 分组码解析为 2D 文档模型")
+                if legacy_mtext_dialect(import_dxf):
+                    # The legacy MTEXT dialect (or the downgrade fallback that
+                    # rebuilt the DWG from it) loses the true text height.
+                    # Join native DWG fields back by handle so the viewer does
+                    # not invent a display-only font size.
+                    native = load_native_text(source, work / "native.json",
+                                              self._run)
+                    fixed = apply_native_text(doc, native)
+                    if fixed:
+                        report.steps.append(
+                            f"已从 DWG 原生字段恢复 {fixed} 个 MTEXT 的真实字高与附着点")
+                    else:
+                        report.warnings.append(
+                            "检测到旧式 MTEXT 分组码，但未能从 DWG 原生字段恢复字高；"
+                            "标题文字大小可能不准")
 
             doc.source_path = str(source)
             doc.source_version = source_version

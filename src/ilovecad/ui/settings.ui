@@ -118,8 +118,8 @@
         <widget class="QGroupBox" name="groupTextHeight">
          <property name="title"><string>文字高度（源文件字高永不改写）</string></property>
          <layout class="QVBoxLayout" name="vboxTextHeight">
-          <item><widget class="QRadioButton" name="radioTextAuto"><property name="text"><string>自适应（默认）：保留大小层级，仅压缩异常巨大的标题字</string></property><property name="checked"><bool>true</bool></property></widget></item>
-          <item><widget class="QRadioButton" name="radioTextExact"><property name="text"><string>原样 1:1：完全按源图纸字高显示</string></property></widget></item>
+          <item><widget class="QRadioButton" name="radioTextAuto"><property name="text"><string>自适应（可选）：仅压缩异常巨大的标题字，保留大小层级</string></property></widget></item>
+          <item><widget class="QRadioButton" name="radioTextExact"><property name="text"><string>原样 1:1（默认）：完全按源图纸字高显示</string></property><property name="checked"><bool>true</bool></property></widget></item>
          </layout>
         </widget>
        </item>
