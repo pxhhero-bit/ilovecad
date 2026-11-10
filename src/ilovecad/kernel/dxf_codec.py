@@ -367,6 +367,16 @@ def _parse_entity(kind: str, groups) -> Entity | None:
         d["handle"] = int(str(handle).strip(), 16)
     except ValueError:
         d["handle"] = 0
+    # DXF 420 carries a 0x00RRGGBB true colour. Keep the exact value for the
+    # display layer; group 62 stays as the ACI fallback for older readers.
+    tc = _first(groups, "420", "") or ""
+    try:
+        tc_value = int(str(tc).strip())
+        if tc_value:
+            d["true_color"] = ((tc_value >> 16) & 0xFF,
+                               (tc_value >> 8) & 0xFF, tc_value & 0xFF)
+    except ValueError:
+        pass
     return Entity(0, kind, c["layer"], c["color"], c["linetype"],
                   c["lineweight"], d)
 
@@ -626,6 +636,14 @@ class _Writer:
         self.p(8, e.layer)
         if e.color != 256:
             self.p(62, e.color)
+        # True colour (DXF group 420) preserves the user's exact RGB choice
+        # even though group 62 can only hold the nearest ACI approximation.
+        rgb = e.data.get("true_color") if isinstance(e.data, dict) else None
+        if isinstance(rgb, (tuple, list)) and len(rgb) >= 3:
+            try:
+                self.p(420, (int(rgb[0]) << 16) | (int(rgb[1]) << 8) | int(rgb[2]))
+            except (TypeError, ValueError):
+                pass
         if e.linetype and e.linetype.upper() != "BYLAYER":
             self.p(6, e.linetype)
         if e.lineweight:

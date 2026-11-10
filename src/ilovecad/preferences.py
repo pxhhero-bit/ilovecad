@@ -17,6 +17,7 @@ _KEY_UNITS = "measurement/units"
 _KEY_PRECISION = "measurement/precision"
 _KEY_TEXT_MODE = "text/height_mode"
 _KEY_TEXT_SCALE = "text/display_scale"
+_KEY_DRAW_COLOR = "drawing/color"
 
 # $INSUNITS codes with a known millimetre conversion (see geometry.UNIT_MM).
 UNITS_CHOICES = (
@@ -141,3 +142,48 @@ def save_text_settings(mode, scale) -> tuple[str, float]:
     except Exception:
         pass
     return m, v
+
+
+def sanitize_draw_color(value) -> tuple[int, int, int] | None:
+    """``None`` means ByLayer; otherwise an exact RGB triple."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        s = value.strip()
+        if not s or s.upper() in ("BYLAYER", "BYBLOCK", "NONE"):
+            return None
+        if s.startswith("#"):
+            s = s[1:]
+        if len(s) == 6:
+            try:
+                return tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))  # type: ignore
+            except ValueError:
+                return None
+        return None
+    if isinstance(value, (tuple, list)) and len(value) >= 3:
+        try:
+            return tuple(max(0, min(255, int(c))) for c in value[:3])  # type: ignore
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def load_draw_color() -> tuple[int, int, int] | None:
+    try:
+        return sanitize_draw_color(_settings().value(_KEY_DRAW_COLOR, None))
+    except Exception:
+        return None
+
+
+def save_draw_color(value) -> tuple[int, int, int] | None:
+    rgb = sanitize_draw_color(value)
+    try:
+        s = _settings()
+        if rgb is None:
+            s.setValue(_KEY_DRAW_COLOR, "BYLAYER")
+        else:
+            s.setValue(_KEY_DRAW_COLOR, "#%02X%02X%02X" % rgb)
+        s.sync()
+    except Exception:
+        pass
+    return rgb

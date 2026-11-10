@@ -34,8 +34,53 @@ def aci_rgb(index: int, dark: bool = False) -> tuple[int, int, int]:
     return (r, g, b)
 
 
+def normalize_rgb(value) -> tuple[int, int, int] | None:
+    """Accept an RGB tuple, a ``#RRGGBB`` string or a DXF 0x00RRGGBB int."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        value = (value >> 16 & 0xFF, value >> 8 & 0xFF, value & 0xFF)
+    if isinstance(value, str):
+        s = value.strip().lstrip("#")
+        if len(s) != 6:
+            return None
+        try:
+            value = tuple(int(s[i:i + 2], 16) for i in (0, 2, 4))
+        except ValueError:
+            return None
+    if not isinstance(value, (tuple, list)) or len(value) < 3:
+        return None
+    try:
+        rgb = tuple(max(0, min(255, int(v))) for v in value[:3])
+    except (TypeError, ValueError):
+        return None
+    return rgb  # type: ignore[return-value]
+
+
+def rgb_to_dxf(rgb: tuple[int, int, int]) -> int:
+    r, g, b = rgb
+    return (r << 16) | (g << 8) | b
+
+
+def nearest_aci(rgb: tuple[int, int, int]) -> int:
+    """Best ACI 1..255 for a true colour (group 62 fallback on write)."""
+    target = normalize_rgb(rgb) or (128, 128, 128)
+    best, best_d = 7, float("inf")
+    for index in list(BASE) + list(range(10, 250)):
+        c = aci_rgb(index)
+        d = sum((a - b) ** 2 for a, b in zip(target, c))
+        if d < best_d:
+            best, best_d = index, d
+    return best
+
+
 def entity_color(ent, doc, dark: bool = False, monochrome: bool = False):
     if monochrome:
         return (0, 0, 0)
+    # A true-colour override (DXF group 420 / user-assigned colour) wins over
+    # both the ACI index and the layer colour.
+    rgb = normalize_rgb(getattr(ent, "data", {}).get("true_color"))
+    if rgb:
+        return rgb
     idx = ent.color if ent.color not in (0, 256) else doc.layer_of(ent).color
     return aci_rgb(idx, dark)

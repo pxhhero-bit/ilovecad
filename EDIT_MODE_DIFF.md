@@ -16,9 +16,9 @@
 | 字段 | 只读 | 编辑 | 分类 |
 |---|---|---|---|
 | `canvas.read_only` | True | False | expected_state |
-| `report.text_sha256` | 1c0d4c45b233bd31 | ab1a13752c8a041a | expected_state |
+| `report.text_sha256` | 1c0d4c45b233bd31 | c4f9ab24448b077b | expected_state |
 | `session.degraded` | False | True | expected_state |
-| `session.edit_started_at` |  | 2026-11-10T01:57:52 | expected_state |
+| `session.edit_started_at` |  | 2026-11-11T00:50:04 | expected_state |
 | `session.mode` | readonly | editable | expected_state |
 | `session.read_only` | True | False | expected_state |
 | `session.risk_snapshot_lines` | 0 | 13 | expected_state |

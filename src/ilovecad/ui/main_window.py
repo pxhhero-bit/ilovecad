@@ -6,11 +6,12 @@ import csv
 from collections import Counter
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont
-from PySide6.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog,
-                               QInputDialog, QLabel, QListWidgetItem, QMainWindow,
-                               QMenu, QMessageBox, QSizePolicy, QTreeWidgetItem)
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
+from PySide6.QtWidgets import (QApplication, QColorDialog, QDialog,
+                               QDialogButtonBox, QFileDialog, QInputDialog,
+                               QLabel, QListWidgetItem, QMainWindow, QMenu,
+                               QMessageBox, QSizePolicy, QTreeWidgetItem)
 
 from .. import APP_NAME, APP_VERSION
 from ..kernel.core import ImportReport, KernelError, LibreDwgKernel
@@ -20,7 +21,8 @@ from ..model import layer_ops
 from ..model.document import DwgDocument
 from ..model.session import (DocumentSession, empty_session, sha256_file)
 from ..preferences import (DEFAULT_PRECISION, DEFAULT_UNITS, UNITS_CHOICES,
-                           load_text_settings, load_units_precision,
+                           load_draw_color, load_text_settings,
+                           load_units_precision, save_draw_color,
                            save_snap_config, save_text_settings,
                            save_units_precision, sanitize_text_settings,
                            sanitize_units_precision)
@@ -242,9 +244,11 @@ class MainWindow(QMainWindow):
         self.text_mode, self.text_scale = load_text_settings()
         self.doc.text_height_mode = self.text_mode
         self.doc.text_scale = self.text_scale
+        self.draw_color = load_draw_color()
 
         self.canvas = self.ui.canvas
         self.canvas.set_document(self.doc)
+        self.canvas.set_current_color(self.draw_color)
         # Dark is the default; a previous local choice is restored on startup.
         self.theme = apply_theme(load_theme())
         self.canvas.set_dark(is_dark(self.theme))
@@ -277,6 +281,119 @@ class MainWindow(QMainWindow):
                      "（已写入 $INSUNITS，几何坐标不变）")
         return u, p
 
+    # ---------------------------------------------------------------- colours
+    @staticmethod
+    def _color_swatch(rgb) -> QIcon:
+        """Small icon: exact colour chip, or a split chip for 'ByLayer'."""
+        size = 20
+        pix = QPixmap(size, size)
+        pix.fill(Qt.GlobalColor.transparent)
+        qp = QPainter(pix)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        qp.setBrush(QColor(*rgb) if rgb else QColor(145, 158, 178))
+        qp.setPen(QColor(70, 78, 92))
+        qp.drawRoundedRect(1, 1, size - 2, size - 2, 3, 3)
+        if not rgb:
+            qp.setPen(QColor(255, 255, 255))
+            qp.drawLine(4, size - 4, size - 4, 4)
+        qp.end()
+        return QIcon(pix)
+
+    def _refresh_color_ui(self, *_ignored) -> None:
+        rgb = self.canvas.current_color
+        self.lblColor.setText("颜色 随层" if rgb is None else
+                              f"颜色 RGB {rgb[0]},{rgb[1]},{rgb[2]}")
+        icon = self._color_swatch(rgb)
+        for name in ("btnDrawColor", "actDrawColor"):
+            widget = getattr(self.ui, name, None)
+            if widget is None:
+                continue
+            widget.setIcon(icon)
+            if hasattr(widget, "setIconSize"):
+                widget.setIconSize(QSize(20, 20))
+                widget.setToolButtonStyle(
+                    Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+
+    def _apply_draw_color(self, rgb, persist: bool = True) -> None:
+        rgb = self.canvas.set_current_color(rgb)
+        self.draw_color = save_draw_color(rgb) if persist else rgb
+        self._refresh_color_ui()
+        self._status("绘图颜色：" + ("随层（ByLayer）" if rgb is None
+                                    else f"RGB {rgb}"))
+
+    def _choose_draw_color(self) -> None:
+        """Pick the colour for newly drawn entities, or return to ByLayer."""
+        box = QMessageBox(self)
+        box.setWindowTitle("绘图颜色")
+        box.setIcon(QMessageBox.Icon.Question)
+        cur = self.canvas.current_color
+        box.setText("设置新绘制实体的线条颜色。\n当前："
+                    + ("随层（ByLayer）" if cur is None else f"RGB {cur}")
+                    + "\n已绘制的对象不会被改动；需要改现有线条请用「线条改色」。")
+        pick = box.addButton("选择颜色…", QMessageBox.ButtonRole.ActionRole)
+        layer = box.addButton("恢复随层", QMessageBox.ButtonRole.ActionRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is layer:
+            self._apply_draw_color(None)
+            return
+        if clicked is not pick:
+            return
+        initial = QColor(*(cur or (230, 90, 40)))
+        col = QColorDialog.getColor(
+            initial, self, "选择绘图颜色",
+            QColorDialog.ColorDialogOption.DontUseNativeDialog)
+        if col.isValid():
+            self._apply_draw_color((col.red(), col.green(), col.blue()))
+
+    def _change_selected_color(self) -> None:
+        """Batch-recolor selected entities through an undoable command."""
+        if not self.doc.selected_ids():
+            QMessageBox.information(self, "需要选择",
+                                    "请先在图纸上选中要改色的对象，再执行该命令。")
+            return
+        if not self._guard_edit():
+            return
+        cur = self.canvas.current_color or (230, 90, 40)
+        col = QColorDialog.getColor(
+            QColor(*cur), self, "修改选中对象的线条颜色",
+            QColorDialog.ColorDialogOption.DontUseNativeDialog)
+        if not col.isValid():
+            return
+        rgb = (col.red(), col.green(), col.blue())
+        changed = self.canvas.change_selected_color(rgb)
+        if changed:
+            self._on_selection(changed)
+            self._status(f"已把 {changed} 个对象改为 RGB {rgb}（Ctrl+Z 可撤销）")
+
+    def _command_color_arg(self, arg: str) -> bool:
+        """``COLOR 1`` (ACI) or ``COLOR 255,0,0`` (true colour)."""
+        from ..render.colors import aci_rgb, normalize_rgb
+        s = arg.strip()
+        if s.upper() in ("BYLAYER", "BYBLOCK", "随层"):
+            self._apply_draw_color(None)
+            return True
+        rgb = None
+        if "," in s:
+            try:
+                rgb = normalize_rgb(tuple(
+                    int(v.strip()) for v in s.replace("，", ",").split(",")))
+            except ValueError:
+                rgb = None
+        if rgb is None:
+            try:
+                aci = int(s)
+                if 1 <= aci <= 256:
+                    rgb = aci_rgb(aci)
+            except ValueError:
+                rgb = None
+        if rgb is None:
+            self._status("颜色参数无效：用 ACI 号（1–256）、R,G,B 或 BYLAYER")
+            return True
+        self._apply_draw_color(rgb)
+        return True
+
     # ------------------------------------------------------------------ setup
     def _build_status_bar(self):
         self.lblCoord = QLabel("X 0.000   Y 0.000")
@@ -285,17 +402,19 @@ class MainWindow(QMainWindow):
         self.lblOrtho = QLabel("正交 关")
         self.lblGrid = QLabel("栅格 开")
         self.lblLW = QLabel("线宽 开")
+        self.lblColor = QLabel("颜色 随层")
         self.lblUnits = QLabel("")
         self.lblMode = QLabel("模式：可编辑（空白图纸）")
         self.lblVersion = QLabel(TARGET_VERSION_LABEL)
         self.lbl2D = QLabel("2D ONLY")
         self.lblMessage = QLabel("")
         for w in (self.lblCoord, self.lblScale, self.lblSnap, self.lblOrtho,
-                  self.lblGrid, self.lblLW, self.lblUnits, self.lblMode,
-                  self.lblMessage):
+                  self.lblGrid, self.lblLW, self.lblColor, self.lblUnits,
+                  self.lblMode, self.lblMessage):
             w.setStyleSheet("QLabel { padding: 0 9px; }")
         for w in (self.lblCoord, self.lblScale, self.lblSnap, self.lblOrtho,
-                  self.lblGrid, self.lblLW, self.lblUnits, self.lblMode):
+                  self.lblGrid, self.lblLW, self.lblColor, self.lblUnits,
+                  self.lblMode):
             self.ui.statusbar.addWidget(w)
         self.lblMessage.setSizePolicy(QSizePolicy.Policy.Expanding,
                                       QSizePolicy.Policy.Preferred)
@@ -319,6 +438,8 @@ class MainWindow(QMainWindow):
         c.snapStateChanged.connect(self._on_snap_state)
         c.snapHint.connect(self._on_snap_hint)
         c.editBlocked.connect(self._on_edit_blocked)
+        c.contextMenuRequested.connect(self._show_canvas_context_menu)
+        c.currentColorChanged.connect(self._refresh_color_ui)
 
         tool_map = {
             "btnOpen": self.open_file_dialog, "btnSave": self.save,
@@ -336,6 +457,8 @@ class MainWindow(QMainWindow):
             "btnDrawCircle": lambda: c.set_mode("draw_circle"),
             "btnDrawArc": lambda: c.set_mode("draw_arc"),
             "btnDrawText": lambda: c.set_mode("draw_text"),
+            "btnDrawColor": lambda *_: self._choose_draw_color(),
+            "btnChangeColor": lambda *_: self._change_selected_color(),
             "btnSelect": lambda: c.set_mode("select"),
             "btnUndo": self._undo_guarded, "btnRedo": self._redo_guarded,
             "btnMove": lambda: self._need_selection("move"),
@@ -399,6 +522,8 @@ class MainWindow(QMainWindow):
             "actLayerManager": self.open_layer_manager,
             "actMirror": lambda: self._need_selection("mirror"),
             "actScale": lambda: self._need_selection("scale"),
+            "actDrawColor": lambda *_: self._choose_draw_color(),
+            "actChangeColor": lambda *_: self._change_selected_color(),
             "actCommandHelp": self._show_command_help,
             "actAbout": self.show_about,
             "actEnterEdit": lambda: self._confirm_enter_edit(),
@@ -425,6 +550,118 @@ class MainWindow(QMainWindow):
         u.measureList.customContextMenuRequested.connect(self._measure_context_menu)
         u.measureList.itemClicked.connect(self._highlight_measurement)
         u.measureList.itemDoubleClicked.connect(self._locate_measurement)
+        self._refresh_color_ui()
+
+    # ------------------------------------------------------------ context menu
+
+    # ------------------------------------------------------------ context menu
+    def _show_canvas_context_menu(self, pos, has_selection: bool,
+                                  *, execute: bool = True) -> QMenu:
+        """Right-click menu on the canvas: every editing command in one place.
+
+        ``execute=False`` builds the menu without showing it (used by the
+        headless self test).  Read-only sessions keep the same menu; edit
+        entries route through the explicit degradation gate, so nothing
+        bypasses source protection.
+        """
+        c = self.canvas
+        menu = QMenu(self)
+        menu.setTitle("图纸操作")
+
+        def act(parent, label, fn, enabled: bool = True, tip: str = ""):
+            a = parent.addAction(label)
+            a.setEnabled(enabled)
+            if tip:
+                a.setToolTip(tip)
+            if fn is not None:
+                a.triggered.connect(lambda *_ignored, f=fn: f())
+            return a
+
+        def editing(fn, needs_selection: bool = False):
+            def run():
+                if needs_selection and not self.doc.selected_ids():
+                    QMessageBox.information(
+                        self, "需要选择",
+                        "请先在图纸上选中对象，再执行该命令。")
+                    return
+                self._guard_edit(fn)
+            return run
+
+        if self.session.read_only:
+            act(menu, "进入编辑模式（确认降级风险）…",
+                lambda: self._confirm_enter_edit())
+            menu.setToolTip("当前只读；编辑功能会先要求确认降级")
+        else:
+            act(menu, "恢复只读 / 放弃编辑…",
+                lambda: self._restore_readonly())
+        act(menu, "选择", lambda: c.set_mode("select"))
+
+        def clear_selection():
+            self.doc.clear_selection()
+            c._after_selection()
+            c.invalidate()
+
+        act(menu, "取消选择", clear_selection)
+        menu.addSeparator()
+
+        modify = menu.addMenu("修改选中对象(&M)")
+        tip = "请先在图纸上选中对象" if not has_selection else ""
+        for label, mode in (("移动（实时预览）", "move"),
+                            ("复制（实时预览）", "copy"),
+                            ("旋转（实时预览）", "rotate"),
+                            ("镜像（实时预览）", "mirror"),
+                            ("缩放（比例）", "scale")):
+            act(modify, label, editing(lambda m=mode: c.set_mode(m), True),
+                has_selection, tip)
+        act(modify, "删除", editing(lambda: c.set_mode("delete"), True),
+            has_selection, tip)
+        act(modify, "线条改色…", lambda: self._change_selected_color(),
+            has_selection, tip)
+
+        draw = menu.addMenu("绘制(&D)")
+        for label, mode in (("直线", "draw_line"),
+                            ("多段线", "draw_polyline"),
+                            ("矩形", "draw_rect"),
+                            ("圆", "draw_circle"),
+                            ("圆弧", "draw_arc"),
+                            ("文字", "draw_text")):
+            act(draw, label, editing(lambda m=mode: c.set_mode(m)))
+        act(draw, "绘图颜色…", lambda: self._choose_draw_color())
+
+        history = menu.addMenu("编辑历史与图层(&H)")
+        act(history, "撤销 (Ctrl+Z)", lambda: self._undo_guarded(),
+            not self.session.read_only)
+        act(history, "重做 (Ctrl+Y)", lambda: self._redo_guarded(),
+            not self.session.read_only)
+        act(history, "图层管理…", lambda: self.open_layer_manager())
+        act(history, "属性面板（双击属性值可改）",
+            lambda: self.ui.propTree.setFocus())
+
+        view = menu.addMenu("视图(&V)")
+        act(view, "适应全图 (Z)", lambda: c.fit_view())
+        act(view, "完整范围（含离群对象）", lambda: c.fit_view(full=True))
+        act(view, "窗口缩放", lambda: c.set_mode("zoom_window"))
+        act(view, "平移", lambda: c.set_mode("pan"))
+        act(view, "放大", lambda: c.zoom_in())
+        act(view, "缩小", lambda: c.zoom_out())
+        act(view, "栅格开关 (F7)", lambda: self.lblGrid.setText(
+            f"栅格 {'开' if c.toggle_grid() else '关'}"))
+
+        measure_menu = menu.addMenu("测量(&S)")
+        for label, mode in (("测距离", "distance"), ("累计长度", "chain"),
+                            ("测面积", "area"), ("半径 / 直径", "radius"),
+                            ("夹角（三点）", "angle"),
+                            ("夹角（两线）", "angle_lines")):
+            act(measure_menu, label, lambda m=mode: c.set_mode(m))
+
+        menu.addSeparator()
+        act(menu, "导出矢量 PDF…", lambda: self.export_pdf())
+        act(menu, "另存原样副本（无损）…", lambda: self.save_source_copy())
+        act(menu, "命令与快捷键说明 (F1)",
+            lambda: self._show_command_help())
+        if execute:
+            menu.exec(c.mapToGlobal(pos))
+        return menu
 
     # ------------------------------------------------------------------ files
     def _update_title(self):
@@ -1019,6 +1256,10 @@ class MainWindow(QMainWindow):
         key = item.data(0, Qt.ItemDataRole.UserRole)
         if not key:
             return
+        if key == "attr:color":
+            # A colour is a visual choice, not a text field: open the picker.
+            self._change_selected_color()
+            return
         selected = [e for e in self.doc.entities if e.selected]
         label = item.text(0)
         current = item.text(1)
@@ -1175,9 +1416,16 @@ class MainWindow(QMainWindow):
             "捕捉：F3 或 SNAP 开关；OSNAP / SNAPSET 打开捕捉设置；\n"
             "       端点 / 顶点、中点、中心 / 圆心、象限点、交点、垂足、最近点可单独开关\n"
             "绘制：L / LINE、PL、REC、C / CIRCLE、A、T / TEXT\n"
+            "颜色：COLOR / COL 打开绘图颜色（可「恢复随层」）；COLOR 1 用 ACI 号，\n"
+            "      COLOR 255,0,0 用真彩色；BYLAYER 恢复随层；\n"
+            "      CHCOLOR / CHANGECOLOR / CC 批量修改选中对象的线条颜色；\n"
+            "      属性面板双击「颜色」行同样打开取色器；新绘制实体带精确 RGB，\n"
+            "      写回 R2004 同时保存 DXF 420 真彩色与最接近的 ACI 62\n"
             "编辑：E / DELETE、M / MOVE、CO / COPY、RO / ROTATE、MI / MIRROR、SC / SCALE、\n"
             "      UNDO / Ctrl+Z、REDO / Ctrl+Y；属性面板双击可改图层 / 颜色 / 线型 / 线宽 /\n"
             "      坐标 / 半径 / 文字内容，支持多选批量修改\n"
+            "      移动 / 复制 / 旋转 / 镜像：点取基点后实时显示变换预览，原图淡化；\n"
+            "      点取目标点落地，Esc 或右键取消。右键弹出完整编辑功能菜单\n"
             "图层：LA / LAYER 打开图层管理（新建 / 重命名 / 删除 / 锁定 / 颜色线型线宽）；\n"
             "      锁定图层仍可见可捕捉，但不能被选中编辑\n"
             "测量：DI / DIST、CHAIN、AREA、R、ANG / DAN（三点夹角）、AL / ANGLELINE（两线夹角）\n"
@@ -1208,6 +1456,18 @@ class MainWindow(QMainWindow):
             "AL": "angle_lines", "ANGLELINE": "angle_lines",
             "Z": None, "P": "pan", "SEL": "select", "ESC": "select",
         }
+        if cmd in ("COLOR", "COL", "DRAWCOLOR", "SETCOLOR"):
+            self._choose_draw_color()
+            return
+        if cmd.startswith("COLOR ") or cmd.startswith("COL "):
+            self._command_color_arg(text.split(None, 1)[1])
+            return
+        if cmd in ("BYLAYER", "COLORBYLAYER", "CB"):
+            self._apply_draw_color(None)
+            return
+        if cmd in ("CHCOLOR", "CHANGECOLOR", "RECOLOR", "CC"):
+            self._change_selected_color()
+            return
         if cmd in ("Z", "FIT"):
             self.canvas.fit_view()
             _, ignored = self.doc.robust_bounds()

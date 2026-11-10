@@ -56,6 +56,7 @@
         <item><widget class="QToolButton" name="btnDrawCircle"><property name="text"><string>圆</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnDrawArc"><property name="text"><string>圆弧</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnDrawText"><property name="text"><string>文字</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnDrawColor"><property name="text"><string>绘图颜色</string></property><property name="toolTip"><string>为新绘制的实体选择线条颜色（默认随层）；命令 COLOR</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerDraw"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
       </widget>
@@ -72,6 +73,7 @@
         <item><widget class="QToolButton" name="btnMirror"><property name="text"><string>镜像</string></property><property name="toolTip"><string>先选中对象，再点取镜像轴两点</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnScale"><property name="text"><string>缩放</string></property><property name="toolTip"><string>先选中对象，再点取基点并输入比例</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><widget class="QToolButton" name="btnEnterEdit"><property name="text"><string>进入编辑</string></property><property name="toolTip"><string>默认只读；确认降级风险后启用 2D 可编辑模型（EDIT）</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
+        <item><widget class="QToolButton" name="btnChangeColor"><property name="text"><string>线条改色</string></property><property name="toolTip"><string>批量修改选中对象的线条颜色（撤销可用）；命令 CHCOLOR</string></property><property name="minimumSize"><size><width>78</width><height>54</height></size></property></widget></item>
         <item><spacer name="spacerEdit"><property name="orientation"><enum>Qt::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
        </layout>
       </widget>
@@ -147,7 +149,7 @@
    <property name="geometry"><rect><x>0</x><y>0</y><width>1440</width><height>26</height></rect></property>
    <widget class="QMenu" name="menuFile"><property name="title"><string>文件(&amp;F)</string></property><addaction name="actOpen"/><addaction name="actSave"/><addaction name="actSaveAs"/><addaction name="actSaveSourceCopy"/><addaction name="separator"/><addaction name="actExportPdf"/><addaction name="actExportDxf"/><addaction name="actBatchConvert"/><addaction name="separator"/><addaction name="actQuit"/></widget>
    <widget class="QMenu" name="menuView"><property name="title"><string>视图(&amp;V)</string></property><addaction name="actFit"/><addaction name="actZoomIn"/><addaction name="actZoomOut"/><addaction name="separator"/><addaction name="actThemeSettings"/><addaction name="actSnapSettings"/><addaction name="actTextSettings"/></widget>
-   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actEnterEdit"/><addaction name="separator"/><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/><addaction name="separator"/><addaction name="actMirror"/><addaction name="actScale"/><addaction name="separator"/><addaction name="actLayerManager"/></widget>
+   <widget class="QMenu" name="menuEdit"><property name="title"><string>编辑(&amp;E)</string></property><addaction name="actEnterEdit"/><addaction name="separator"/><addaction name="actUndo"/><addaction name="actRedo"/><addaction name="actDelete"/><addaction name="separator"/><addaction name="actMirror"/><addaction name="actScale"/><addaction name="actChangeColor"/><addaction name="separator"/><addaction name="actDrawColor"/><addaction name="actLayerManager"/></widget>
    <widget class="QMenu" name="menuMeasure"><property name="title"><string>测量(&amp;M)</string></property><addaction name="actMeasureDistance"/><addaction name="actMeasureArea"/><addaction name="actMeasureAngle"/><addaction name="actMeasureAngleLines"/><addaction name="separator"/><addaction name="actUnitsSettings"/></widget>
    <widget class="QMenu" name="menuHelp"><property name="title"><string>帮助(&amp;H)</string></property><addaction name="actCommandHelp"/><addaction name="separator"/><addaction name="actAbout"/></widget>
    <addaction name="menuFile"/><addaction name="menuView"/><addaction name="menuEdit"/><addaction name="menuMeasure"/><addaction name="menuHelp"/>
@@ -180,6 +182,8 @@
   <action name="actUnitsSettings"><property name="text"><string>单位与精度…</string></property><property name="toolTip"><string>设置 $INSUNITS 与测量结果小数位</string></property></action>
   <action name="actMirror"><property name="text"><string>镜像</string></property></action>
   <action name="actScale"><property name="text"><string>缩放</string></property></action>
+  <action name="actDrawColor"><property name="text"><string>绘图颜色…</string></property><property name="toolTip"><string>设置新绘制实体的线条颜色（默认随层），命令 COLOR</string></property></action>
+  <action name="actChangeColor"><property name="text"><string>修改选中对象颜色…</string></property><property name="toolTip"><string>批量改色，支持多选与撤销；命令 CHCOLOR</string></property></action>
   <action name="actAbout"><property name="text"><string>关于 IloveCAD</string></property></action>
  </widget>
  <customwidgets>

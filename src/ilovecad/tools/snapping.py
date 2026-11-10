@@ -99,7 +99,8 @@ def _near_bounds(b, p: Point, tol: float) -> bool:
 
 def find_snap(doc: DwgDocument, p: Point, tol: float, enabled: bool = True,
               config: SnapConfig | None = None,
-              reference: Point | None = None) -> SnapResult | None:
+              reference: Point | None = None,
+              bounds_of=None) -> SnapResult | None:
     """Find the highest-priority snap point within ``tol`` model units.
 
     ``reference`` is the last picked point; when present, perpendicular snaps
@@ -126,7 +127,8 @@ def find_snap(doc: DwgDocument, p: Point, tol: float, enabled: bool = True,
                               KIND_LABELS[kind], d, kind, score, eid)
 
     for ent in doc.entities:
-        if not doc.visible(ent) or not _near_bounds(ent.bounds(), p, tol * 2):
+        eb = bounds_of(ent) if bounds_of else ent.bounds()
+        if not doc.visible(ent) or not _near_bounds(eb, p, tol * 2):
             continue
         for q, kind in ent.snap_candidates():
             consider(q, kind, ent.eid)
@@ -169,10 +171,13 @@ def ortho_point(origin: Point, p: Point) -> Point:
 
 
 def nearest_entity(doc: DwgDocument, p: Point, tol: float,
-                   editable_only: bool = False):
+                   editable_only: bool = False, bounds_of=None):
     best, best_d = None, float("inf")
     for ent in doc.entities:
-        if not doc.visible(ent) or not _near_bounds(ent.bounds(), p, tol * 2):
+        if not doc.visible(ent):
+            continue
+        eb = bounds_of(ent) if bounds_of else ent.bounds()
+        if not _near_bounds(eb, p, tol * 2):
             continue
         if editable_only and not doc.editable(ent):
             continue
@@ -183,7 +188,8 @@ def nearest_entity(doc: DwgDocument, p: Point, tol: float,
     return best if best_d <= tol else None
 
 
-def entities_in_rect(doc: DwgDocument, rect, editable_only: bool = False):
+def entities_in_rect(doc: DwgDocument, rect, editable_only: bool = False,
+                     bounds_of=None):
     x0, y0, x1, y1 = rect
     x0, x1 = sorted((x0, x1))
     y0, y1 = sorted((y0, y1))
@@ -193,7 +199,7 @@ def entities_in_rect(doc: DwgDocument, rect, editable_only: bool = False):
             continue
         if editable_only and not doc.editable(ent):
             continue
-        b = ent.bounds()
+        b = bounds_of(ent) if bounds_of else ent.bounds()
         if b and b[0] >= x0 and b[2] <= x1 and b[1] >= y0 and b[3] <= y1:
             ids.add(ent.eid)
     return ids

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen, QPolygonF
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QFontMetrics, QPainter, QPen, QPixmap,
+                           QPolygonF, QTransform)
 from PySide6.QtWidgets import QInputDialog, QMessageBox, QWidget
 from ..fonts import ui_font
 from ..preferences import load_snap_config
+from ..render.colors import nearest_aci, normalize_rgb
 
 from ..model import geometry as g
 from ..model.document import DwgDocument
@@ -38,10 +40,10 @@ MODE_HINTS = {
     "draw_circle": "圆：点取圆心，再点取半径点。",
     "draw_arc": "圆弧：点取圆心、起点、终点（三点）。",
     "draw_text": "文字：点取插入位置并输入内容。",
-    "move": "移动：先选中对象，再点取基点和目标点。",
-    "copy": "复制：先选中对象，再点取基点和目标点。",
-    "rotate": "旋转：先选中对象，再点取基点、参考点、目标点。",
-    "mirror": "镜像：先选中对象，再点取镜像轴上的两点，可选择保留原对象。",
+    "move": "移动：先选中对象，点取基点后实时预览；再点目标点落地，Esc / 右键取消。",
+    "copy": "复制：先选中对象，点取基点后实时预览；再点目标点落地，Esc / 右键取消。",
+    "rotate": "旋转：选中对象，点取基点、参考点后实时预览角度，再点目标点落地。",
+    "mirror": "镜像：选中对象，点取镜像轴首点后实时预览，再点第二点并确认是否保留原对象。",
     "scale": "缩放：先选中对象，再点取基点并输入比例（例如 2 或 0.5）。",
     "delete": "删除：删除当前选中的对象。",
 }
@@ -52,6 +54,10 @@ EDIT_MODES = frozenset({
     "draw_line", "draw_polyline", "draw_rect", "draw_circle", "draw_arc",
     "draw_text", "move", "copy", "rotate", "mirror", "scale", "delete",
 })
+
+# Commands where picking the base point must immediately show a live preview
+# of the transformed geometry while the source strokes are dimmed.
+PREVIEW_MODES = frozenset({"move", "copy", "rotate", "mirror"})
 
 
 class CadCanvas(QWidget):
@@ -64,6 +70,8 @@ class CadCanvas(QWidget):
     snapStateChanged = Signal(bool)
     snapHint = Signal(str)
     editBlocked = Signal(str)          # a write attempt hit the read-only gate
+    contextMenuRequested = Signal(QPoint, bool)   # global pos? local pos + has-selection
+    currentColorChanged = Signal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -98,9 +106,153 @@ class CadCanvas(QWidget):
         self._rubber: tuple[QPointF, QPointF] | None = None
         self._panning = False
         self._window_selecting = False
+
+        # --- colour state -------------------------------------------------
+        # ``None`` = ByLayer.  Otherwise an exact RGB triple; the nearest ACI
+        # is kept alongside it so a R2004 round trip still carries a colour.
+        self.current_color: tuple[int, int, int] | None = None
+
+        # --- transform preview state --------------------------------------
+        self._preview_source: list[tuple[list[Point], bool]] = []
+        self._preview_texts: list[tuple[Point, str, float, float]] = []
+
+        # --- static scene cache -------------------------------------------
+        # A large drawing (6000+ entities, tessellated splines, hatch lines)
+        # used to be fully re-tessellated, re-shaped and re-painted on every
+        # wheel tick and on *every* mouse move for the crosshair.  The static
+        # scene is now cached as a pixmap; during a zoom / pan gesture Qt only
+        # blits that pixmap through an affine transform, and a short settle
+        # timer triggers one full-quality repaint when the gesture stops.
+        self._scene: QPixmap | None = None
+        self._scene_key = None
+        self._scene_view: tuple | None = None
+        self._interactive = False
+        self._settle = QTimer(self)
+        self._settle.setSingleShot(True)
+        self._settle.setInterval(130)
+        self._settle.timeout.connect(self._finish_interactive)
+        self._bounds_cache: dict[int, tuple] = {}
+        self._bounds_rev = -1
         self.statusMessage.emit("就绪")
 
     # ------------------------------------------------------------------ state
+    def _invalidate_scene(self) -> None:
+        self._scene = None
+
+    def _view_state(self) -> tuple:
+        return (self.view.scale, self.view.cx, self.view.cy,
+                self.width(), self.height())
+
+    def _scene_cache_key(self) -> tuple:
+        return (self._revision, self.dark, self.show_lineweight,
+                self.include_measurements, self._highlight_index,
+                self.doc.text_height_mode, self.doc.text_scale,
+                self.grid, self.width(), self.height(),
+                self._fade_selection())
+
+    def _begin_interactive(self) -> None:
+        """Start a fast bitmap-transform gesture (wheel zoom / drag pan).
+
+        The very first frame of a gesture must be a full-quality render of the
+        *current* view, otherwise an older cached pixmap would be scaled into
+        a blurry placeholder. Once the gesture is running, further frames are
+        pure affine blits until the settle timer restores full quality.
+        """
+        if not self._interactive:
+            key = self._scene_cache_key()
+            if (self._scene is None or self._scene_key != key
+                    or self._scene.size() != self.size()
+                    or self._scene_view != self._view_state()):
+                self._render_scene(key)
+        self._interactive = True
+        self._settle.start()
+
+    def _finish_interactive(self) -> None:
+        self._interactive = False
+        self.update()      # one full-quality repaint at the final view
+
+    def _scene_transform(self) -> QTransform:
+        """Affine map from the cached scene's view to the current view."""
+        s0, cx0, cy0, w0, h0 = self._scene_view
+        s1, cx1, cy1, w1, h1 = self._view_state()
+        k = s1 / s0 if s0 else 1.0
+        tx = w1 / 2.0 - k * w0 / 2.0 + (cx0 - cx1) * s1
+        ty = h1 / 2.0 - k * h0 / 2.0 + (cy1 - cy0) * s1
+        return QTransform(k, 0.0, 0.0, k, tx, ty)
+
+    def _entity_bounds(self, ent):
+        """Revision-scoped bbox cache: snapping used to recompute every
+        spline / hatch vertex on *each* mouse move."""
+        if self._bounds_rev != self._revision:
+            self._bounds_cache.clear()
+            self._bounds_rev = self._revision
+        b = self._bounds_cache.get(ent.eid)
+        if b is None:
+            b = ent.bounds()
+            self._bounds_cache[ent.eid] = b
+        return b
+
+    def _fade_selection(self) -> bool:
+        return self.mode in PREVIEW_MODES and bool(self.points)
+
+    def _sync_preview_source(self) -> None:
+        """Snapshot the selected strokes once, not on every mouse move."""
+        self._preview_source = []
+        self._preview_texts = []
+        if self.mode not in PREVIEW_MODES:
+            return
+        picked = [e for e in self.doc.entities if e.selected][:400]
+        for ent in picked:
+            if ent.kind in ("TEXT", "MTEXT", "DIMENSION"):
+                pos = tuple(ent.data.get("p", (0.0, 0.0)))
+                off = ent.data.get("display_offset")
+                if off:
+                    pos = (pos[0] + off[0], pos[1] + off[1])
+                self._preview_texts.append(
+                    (pos, str(ent.data.get("text", ""))[:60],
+                     float(ent.data.get("height", 2.5) or 2.5),
+                     float(ent.data.get("rotation", 0.0) or 0.0)))
+            for pts, closed in ent.polylines():
+                if len(pts) < 2:
+                    continue
+                if len(pts) > 1200:     # cap preview cost on huge splines
+                    step = max(1, len(pts) // 1200)
+                    pts = pts[::step] + [pts[-1]]
+                self._preview_source.append(([tuple(p) for p in pts], closed))
+
+    def set_current_color(self, rgb) -> tuple[int, int, int] | None:
+        """Set the colour used by newly drawn entities (None = ByLayer)."""
+        self.current_color = normalize_rgb(rgb)
+        self.currentColorChanged.emit(self.current_color)
+        return self.current_color
+
+    def change_selected_color(self, rgb) -> int:
+        """Batch recolor the selected, unlocked entities (undoable)."""
+        if self.read_only:
+            self._block_edit("change color")
+            return 0
+        color = normalize_rgb(rgb)
+        if color is None:
+            return 0
+        targets = [e for e in self.doc.entities
+                   if e.selected and self.doc.editable(e)]
+        if not targets:
+            self.statusMessage.emit("请先选中未锁定图层上的对象，再修改颜色")
+            return 0
+        aci = nearest_aci(color)
+
+        def do():
+            for e in targets:
+                e.data["true_color"] = color
+                e.color = aci
+
+        if self.undo_stack.perform(f"修改颜色 {len(targets)} 个对象", do):
+            self.refresh()
+            self.statusMessage.emit(
+                f"已把 {len(targets)} 个对象的线条颜色改为 RGB{color}"
+                "（可 Ctrl+Z 撤销）")
+        return len(targets)
+
     def set_document(self, doc: DwgDocument) -> None:
         self.doc = doc
         self.undo_stack.set_document(doc)
@@ -113,17 +265,17 @@ class CadCanvas(QWidget):
         self.mode = "select"
         self.current_layer = "0" if "0" in doc.layers else next(iter(doc.layers), "0")
         self.view.fit(doc.robust_bounds()[0])
-        self._revision += 1
+        self._sync_preview_source()
+        self.invalidate()
         self._emit_hint()
-        self.update()
 
     def invalidate(self) -> None:
         self._revision += 1
+        self._invalidate_scene()
         self.update()
 
     def refresh(self) -> None:
-        self._revision += 1
-        self.update()
+        self.invalidate()
         self.documentEdited.emit()
 
     def set_read_only(self, value: bool) -> bool:
@@ -136,7 +288,8 @@ class CadCanvas(QWidget):
             self._rubber = None
             self.undo_stack.clear()
             self._emit_hint()
-        self.update()
+        self._sync_preview_source()
+        self.invalidate()
         return self.read_only
 
     def _block_edit(self, what: str) -> None:
@@ -151,7 +304,8 @@ class CadCanvas(QWidget):
         self._angle_entities.clear()
         self._rubber = None
         self._emit_hint()
-        self.update()
+        self._sync_preview_source()
+        self.invalidate()
 
     def set_mode(self, mode: str) -> bool:
         if mode not in MODE_HINTS:
@@ -167,8 +321,9 @@ class CadCanvas(QWidget):
             self.delete_selected()
             self.set_mode("select")
             return True
+        self._sync_preview_source()
         self._emit_hint()
-        self.update()
+        self.invalidate()
         return True
 
     def _emit_hint(self) -> None:
@@ -179,6 +334,7 @@ class CadCanvas(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.view.width, self.view.height = self.width(), self.height()
+        self._invalidate_scene()
         self.update()
 
     def fit_view(self, full: bool = False) -> None:
@@ -192,14 +348,17 @@ class CadCanvas(QWidget):
                 self.statusMessage.emit(
                     f"全图视图已按主体图幅显示，忽略 {ignored} 个远处独立图框 / "
                     "离群对象；输入 FITALL 查看完整范围，PDF 可选「完整范围」")
+        self._begin_interactive()
         self.update()
 
     def zoom_in(self) -> None:
         self.view.zoom(1.25)
+        self._begin_interactive()
         self.update()
 
     def zoom_out(self) -> None:
         self.view.zoom(0.8)
+        self._begin_interactive()
         self.update()
 
     def set_dark(self, value: bool) -> bool:
@@ -265,6 +424,7 @@ class CadCanvas(QWidget):
         span = max(doc_b[2] - doc_b[0], doc_b[3] - doc_b[1]) if doc_b else 100.0
         pad = max((x1 - x0), (y1 - y0), span * 0.06)
         self.view.fit((x0 - pad, y0 - pad, x1 + pad, y1 + pad), margin=0.05)
+        self._begin_interactive()
         self.update()
 
     def clear_measurements(self) -> None:
@@ -288,15 +448,44 @@ class CadCanvas(QWidget):
             self._dl_key = key
         return self._dl
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        bg = QColor(30, 32, 37) if self.dark else QColor(255, 255, 255)
-        p.fillRect(self.rect(), bg)
+    def _render_scene(self, key) -> None:
+        """Render background + grid + static geometry into a reusable pixmap."""
+        pix = QPixmap(max(1, self.width()), max(1, self.height()))
+        pix.fill(QColor(30, 32, 37) if self.dark else QColor(255, 255, 255))
+        qp = QPainter(pix)
         if self.grid:
-            self._draw_grid(p)
-        paint_display_list(p, self._display_list(), self.view, self.show_lineweight)
+            self._draw_grid(qp)
+        paint_display_list(qp, self._display_list(), self.view,
+                           self.show_lineweight,
+                           fade_selection=self._fade_selection())
+        qp.end()
+        self._scene = pix
+        self._scene_key = key
+        self._scene_view = self._view_state()
+
+    def paintEvent(self, event):
+        key = self._scene_cache_key()
+        reusable = (self._scene is not None and self._scene_key == key
+                    and self._scene.size() == self.size())
+        if self._interactive and reusable:
+            # Fast path: only the view changed, so blit the cached bitmap
+            # through an affine transform instead of re-shaping 6000 entities.
+            pass
+        elif not reusable or self._scene_view != self._view_state():
+            self._render_scene(key)
+        if self._scene is None:
+            self._render_scene(key)
+        p = QPainter(self)
+        if (self._interactive and self._scene_view
+                and self._scene_view != self._view_state()):
+            p.setTransform(self._scene_transform())
+            p.drawPixmap(0, 0, self._scene)
+            p.resetTransform()
+        else:
+            p.drawPixmap(0, 0, self._scene)
         self._draw_crosshair(p)
         self._draw_temp(p)
+        self._draw_transform_preview(p)
         self._draw_snap(p)
         self._draw_rubber(p)
         p.end()
@@ -352,6 +541,58 @@ class CadCanvas(QWidget):
             p.drawPolyline(pts)
         for q in pts[:-1]:
             p.drawEllipse(q, 3.0, 3.0)
+
+    def _preview_fn(self):
+        """Return f(point)->point for the current cursor, or ``None``."""
+        m, pts, cur = self.mode, self.points, self.cursor_model
+        if m not in PREVIEW_MODES or not pts or cur is None:
+            return None
+        base = pts[0]
+        if m in ("move", "copy") and len(pts) == 1:
+            dx, dy = cur[0] - base[0], cur[1] - base[1]
+            return lambda p: (p[0] + dx, p[1] + dy)
+        if m == "rotate" and len(pts) == 2:
+            ang = g.angle_deg(base, cur) - g.angle_deg(base, pts[1])
+            return lambda p, a=ang: g.rotate((p[0], p[1]), base, a)
+        if m == "mirror" and len(pts) == 1:
+            if g.dist(base, cur) < g.EPS:
+                return None
+            return lambda p: g.mirror_point((p[0], p[1]), base, cur)
+        return None
+
+    def _draw_transform_preview(self, p: QPainter):
+        """Live ghost of the transformed selection; source strokes are dimmed
+        in the cached static scene (``fade_selection``)."""
+        fn = self._preview_fn()
+        if fn is None or (not self._preview_source and not self._preview_texts):
+            return
+        color = QColor(255, 190, 70) if self.dark else QColor(20, 105, 215)
+        pen = QPen(color)
+        pen.setWidthF(1.9)
+        pen.setCosmetic(True)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        for pts, closed in self._preview_source:
+            poly = QPolygonF([QPointF(*self.view.to_screen(fn(q))) for q in pts])
+            if closed:
+                p.drawPolygon(poly)
+            else:
+                p.drawPolyline(poly)
+        if self._preview_texts:
+            from ..fonts import drawing_font
+            for pos, text, height, rotation in self._preview_texts[:120]:
+                size = max(7.0, min(200.0, height * self.view.scale))
+                font = drawing_font(size)
+                p.setFont(font)
+                q = QPointF(*self.view.to_screen(fn(pos)))
+                p.save()
+                p.translate(q)
+                if rotation:
+                    p.rotate(-rotation)
+                p.drawText(QPointF(0, 0), str(text).replace("\n", " "))
+                p.restore()
 
     def _draw_snap(self, p: QPainter):
         """Distinct marker per snap kind, plus a readable label badge."""
@@ -423,7 +664,8 @@ class CadCanvas(QWidget):
         tol = self.snap_config.radius_px / max(self.view.scale, 1e-9)
         reference = self.points[-1] if self.points else None
         self.snap_result = snapping.find_snap(
-            self.doc, raw, tol, self.snap_enabled, self.snap_config, reference)
+            self.doc, raw, tol, self.snap_enabled, self.snap_config, reference,
+            bounds_of=self._entity_bounds)
         kind = self.snap_result.kind if self.snap_result else None
         if kind != self._last_snap_kind:
             self._last_snap_kind = kind
@@ -443,7 +685,14 @@ class CadCanvas(QWidget):
             self._drag_last = QPoint(int(pos.x()), int(pos.y()))
             return
         if e.button() == Qt.MouseButton.RightButton:
-            self._finish_or_cancel()
+            # A command that already collected points treats right-click as
+            # "cancel"; otherwise right-click is the full context menu.
+            if self.points or self._angle_entities:
+                self._finish_or_cancel()
+            else:
+                self.contextMenuRequested.emit(
+                    QPoint(int(pos.x()), int(pos.y())),
+                    bool(self.doc.selected_ids()))
             return
         if e.button() != Qt.MouseButton.LeftButton:
             return
@@ -469,6 +718,7 @@ class CadCanvas(QWidget):
             dx, dy = pos.x() - self._drag_last.x(), pos.y() - self._drag_last.y()
             self.view.pan(dx, dy)
             self._drag_last = QPoint(int(pos.x()), int(pos.y()))
+            self._begin_interactive()
             self.update()
             return
         if self._rubber and self.mode == "zoom_window":
@@ -504,7 +754,8 @@ class CadCanvas(QWidget):
             p1 = self.view.to_model(min(a.x(), b.x()), max(a.y(), b.y()))
             p2 = self.view.to_model(max(a.x(), b.x()), min(a.y(), b.y()))
             ids = snapping.entities_in_rect(
-                self.doc, (p1[0], p1[1], p2[0], p2[1]), editable_only=True)
+                self.doc, (p1[0], p1[1], p2[0], p2[1]), editable_only=True,
+                bounds_of=self._entity_bounds)
             self._window_selecting = False
             self._rubber = None
             self._drag_origin = None
@@ -518,7 +769,8 @@ class CadCanvas(QWidget):
         if self.mode == "select" and self._drag_origin:
             tol = 10.0 / max(self.view.scale, 1e-9)
             ent = snapping.nearest_entity(self.doc, self._model_at(QPointF(pos)), tol,
-                                          editable_only=True)
+                                          editable_only=True,
+                                          bounds_of=self._entity_bounds)
             if not e.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self.doc.clear_selection()
             if ent:
@@ -537,6 +789,7 @@ class CadCanvas(QWidget):
     def wheelEvent(self, e):
         factor = 1.18 if e.angleDelta().y() > 0 else 1 / 1.18
         self.view.zoom(factor, (e.position().x(), e.position().y()))
+        self._begin_interactive()
         self.update()
 
     def keyPressEvent(self, e):
@@ -560,6 +813,7 @@ class CadCanvas(QWidget):
     def _after_selection(self):
         n = len(self.doc.selected_ids())
         self.selectionChanged.emit(n)
+        self._sync_preview_source()
         self.invalidate()
 
     def delete_selected(self) -> None:
@@ -614,7 +868,11 @@ class CadCanvas(QWidget):
         self.statusMessage.emit(f"已添加 {ent.kind}")
 
     def _new(self, kind: str, data: dict) -> Entity:
-        return Entity(0, kind, layer=self.current_layer, data=data)
+        ent = Entity(0, kind, layer=self.current_layer, data=data)
+        if self.current_color:
+            ent.data["true_color"] = tuple(self.current_color)
+            ent.color = nearest_aci(self.current_color)
+        return ent
 
     # ------------------------------------------------------------- tool logic
     def _handle_click(self, q: Point) -> None:
@@ -633,7 +891,8 @@ class CadCanvas(QWidget):
             self.points.append(q)
         elif m == "radius":
             ent = snapping.nearest_entity(
-                self.doc, q, 12.0 / max(self.view.scale, 1e-9))
+                self.doc, q, 12.0 / max(self.view.scale, 1e-9),
+                bounds_of=self._entity_bounds)
             if ent and ent.kind in ("CIRCLE", "ARC"):
                 result = measure.radius(self.doc, ent)
                 if result:
@@ -651,7 +910,8 @@ class CadCanvas(QWidget):
                 self.points.clear()
         elif m == "angle_lines":
             ent = snapping.nearest_entity(
-                self.doc, q, 12.0 / max(self.view.scale, 1e-9))
+                self.doc, q, 12.0 / max(self.view.scale, 1e-9),
+                bounds_of=self._entity_bounds)
             if not ent or not ent.segments():
                 self.statusMessage.emit("请点取直线 / 多段线等线段对象")
             else:
@@ -822,4 +1082,5 @@ class CadCanvas(QWidget):
         else:
             self.doc.clear_selection()
             self._after_selection()
-        self.update()
+        self._sync_preview_source()
+        self.invalidate()

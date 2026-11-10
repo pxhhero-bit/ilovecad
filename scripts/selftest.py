@@ -860,6 +860,150 @@ def editmode_checks(kernel: LibreDwgKernel, result: dict) -> dict:
     return checks
 
 
+def optimization_checks(kernel: LibreDwgKernel, result: dict) -> dict:
+    """Zoom cache, live transform preview, colour editing and context menu."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtGui import QPainter, QPixmap
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    from ilovecad.kernel.dxf_codec import parse_dxf
+    from ilovecad.preferences import load_draw_color, save_draw_color
+    from ilovecad.render.colors import entity_color
+    from ilovecad.render.qt_paint import paint_display_list
+    from ilovecad.ui.canvas import PREVIEW_MODES
+    from ilovecad.ui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([sys.argv[0]])
+    win = MainWindow()
+    win._persist_snapping = False
+    win.resize(1200, 800)
+    dense = DwgDocument()
+    for i in range(400):
+        dense.add(Entity(0, "LINE", "0", data={
+            "a": (float(i), 0.0), "b": (float(i), 120.0)}))
+    win.doc = dense
+    win.canvas.set_document(dense)
+    win.show()
+    app.processEvents()
+
+    checks: dict = {}
+
+    # ---- static scene cache: a zoom gesture must NOT rebuild 400 strokes ----
+    win.canvas.grab()
+    win.canvas._begin_interactive()      # first gesture frame renders 1x
+    scene = win.canvas._scene
+    assert scene is not None, "static scene pixmap was not rendered"
+    for _ in range(20):
+        win.canvas.view.zoom(1.05)
+        win.canvas._begin_interactive()
+        win.canvas.grab()
+    assert win.canvas._scene is scene, \
+        "zoom gesture rebuilt the full scene instead of blitting the cache"
+    win.canvas._finish_interactive()
+    win.canvas.grab()
+    assert win.canvas._scene is not scene, \
+        "no full-quality repaint after the zoom gesture settled"
+    n_before = len(win.canvas._bounds_cache)
+    b1 = win.canvas._entity_bounds(dense.entities[0])
+    b2 = win.canvas._entity_bounds(dense.entities[0])
+    assert b1 == b2 and len(win.canvas._bounds_cache) == n_before + 1
+    checks["zoom_cache"] = {"interactive_frames": 20,
+                            "scene_rebuilt": False,
+                            "bounds_cache": len(win.canvas._bounds_cache)}
+    win.canvas.view.fit(dense.bounds())
+
+    # ---- drawing colour, batch recolor, DXF 420 round trip -----------------
+    assert save_draw_color((12, 34, 56)) == (12, 34, 56)
+    assert load_draw_color() == (12, 34, 56)
+    win._apply_draw_color((12, 34, 56))
+    fresh = win.canvas._new("LINE", {"a": (0.0, 0.0), "b": (10.0, 10.0)})
+    assert fresh.data["true_color"] == (12, 34, 56)
+    assert 1 <= fresh.color <= 255
+    assert entity_color(fresh, dense, False) == (12, 34, 56)
+    target = dense.entities[0]
+    target.selected = True
+    assert win.canvas.change_selected_color((200, 30, 40)) == 1
+    assert target.data["true_color"] == (200, 30, 40)
+    assert entity_color(target, dense, False) == (200, 30, 40)
+    raw = write_dxf(dense)
+    expected = (200 << 16) | (30 << 8) | 40
+    assert (f"\n420\n{expected}\n").encode("ascii") in raw, \
+        "true colour was not written as DXF group 420"
+    back, _ = parse_dxf(raw)
+    assert any(e.data.get("true_color") == (200, 30, 40)
+               for e in back.entities), "DXF 420 was lost on re-import"
+    win.canvas.undo()
+    # Undo restores a snapshot, so document entities are NEW objects; check
+    # the live list instead of the detached pre-undo reference.
+    assert dense.entities[0].data.get("true_color") != (200, 30, 40), \
+        "colour change was not undoable"
+
+    # A real R2004 write / read round trip must keep the exact RGB too.
+    from ilovecad.render.colors import nearest_aci
+    colour_doc = DwgDocument()
+    ce = Entity(0, "LINE", "0", data={"a": (0.0, 0.0), "b": (10.0, 0.0)})
+    ce.data["true_color"] = (200, 30, 40)
+    ce.color = nearest_aci((200, 30, 40))
+    colour_doc.add(ce)
+    colour_dwg = WORK / "opt_color_r2004.dwg"
+    kernel.write(colour_doc, colour_dwg)
+    colour_back, _ = kernel.read(colour_dwg)
+    assert colour_dwg.read_bytes()[:6] == TARGET_VERSION.encode("ascii")
+    assert any(e.data.get("true_color") == (200, 30, 40)
+               for e in colour_back.entities), "R2004 lost the true colour"
+    save_draw_color(None)
+    checks["colour"] = {"draw_rgb": [12, 34, 56],
+                        "batch_rgb": [200, 30, 40],
+                        "dxf_420": expected, "undoable": True,
+                        "r2004_true_colour": True,
+                        "by_layer_default": load_draw_color() is None}
+
+    # ---- live transform preview + dimmed source ----------------------------
+    dense.entities[0].selected = True
+    assert win.canvas.set_mode("move")
+    win.canvas._after_selection()
+    assert "move" in PREVIEW_MODES
+    win.canvas.points = [(0.0, 0.0)]
+    win.canvas.cursor_model = (10.0, 5.0)
+    assert win.canvas._fade_selection(), \
+        "source strokes were not dimmed after picking the base point"
+    fn = win.canvas._preview_fn()
+    assert fn is not None and fn((1.0, 2.0)) == (11.0, 7.0)
+    assert win.canvas._preview_source, "preview geometry was not snapshotted"
+    dl = build(dense)
+    pix = QPixmap(400, 300)
+    qp = QPainter(pix)
+    paint_display_list(qp, dl, win.canvas.view, True, fade_selection=True)
+    qp.end()
+    win.canvas.grab()
+    assert win.canvas.set_mode("select")
+    assert not win.canvas._fade_selection()
+    checks["preview"] = {"modes": sorted(PREVIEW_MODES),
+                         "delta": [10.0, 5.0],
+                         "strokes": len(win.canvas._preview_source) or 1}
+
+    # ---- right-click menu: every editing command is reachable --------------
+    menu = win._show_canvas_context_menu(QPoint(5, 5), True, execute=False)
+    labels = [a.text() for a in menu.actions()]
+    submenus = {m.title(): [a.text() for a in m.actions()]
+                for m in menu.findChildren(QMenu) if m.actions()}
+    all_labels = labels + [t for group in submenus.values() for t in group]
+    required = ("移动（实时预览）", "复制（实时预览）", "旋转（实时预览）",
+                "镜像（实时预览）", "缩放（比例）", "删除", "线条改色…",
+                "直线", "多段线", "矩形", "圆", "圆弧", "文字",
+                "绘图颜色…", "撤销 (Ctrl+Z)", "重做 (Ctrl+Y)",
+                "适应全图 (Z)", "图层管理…")
+    missing = [name for name in required if name not in all_labels]
+    assert not missing, f"context menu is missing: {missing}"
+    checks["context_menu"] = {"top_items": len(labels),
+                              "submenus": {k: len(v) for k, v in submenus.items()},
+                              "required": len(required)}
+
+    win.close()
+    result["optimization"] = checks
+    return checks
+
+
 def main() -> int:
     WORK.mkdir(parents=True, exist_ok=True)
     SHOTS.mkdir(exist_ok=True)
@@ -1069,6 +1213,9 @@ def main() -> int:
 
     step("编辑模块改造回归（恢复只读 / 无损另存 / 多行文字 / 格线开关）")
     editmode_checks(kernel, result)
+
+    step("优化回归（缩放缓存 / 颜色 / 实时预览 / 右键菜单）")
+    optimization_checks(kernel, result)
 
     step("根入口 main.py 与命令行直接打开图纸")
     entry = ROOT / "main.py"

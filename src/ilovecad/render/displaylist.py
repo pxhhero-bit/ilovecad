@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from ..model import geometry as g
 from ..model.document import DwgDocument
 from ..fonts import font_families
-from .colors import aci_rgb, entity_color
+from .colors import aci_rgb, entity_color, normalize_rgb
 
 Point = tuple[float, float]
 
@@ -23,6 +23,7 @@ class PaintPath:
     selected: bool = False
     annotation: bool = False
     kind: str = ""
+    bounds: tuple[float, float, float, float] | None = None
 
 
 @dataclass
@@ -46,6 +47,7 @@ class PaintText:
     underline: bool = False
     strikeout: bool = False
     source_height: float = 0.0
+    selected: bool = False
 
 
 @dataclass
@@ -125,9 +127,9 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
                 source_height * float(d.get("height_scale", 1.0) or 1.0),
                 text_cap) * doc.text_scale
             if lines and height > 0:
-                text_color = color
+                text_color = normalize_rgb(d.get("true_color")) or color
                 override = d.get("color_index")
-                if override is not None and not monochrome:
+                if override is not None and not monochrome and not d.get("true_color"):
                     text_color = aci_rgb(int(override), dark)
                 pos = tuple(d.get("p", (0, 0)))
                 off = d.get("display_offset")
@@ -153,7 +155,7 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
                     italic=bool(d.get("italic", False)),
                     underline=bool(d.get("underline", False)),
                     strikeout=bool(d.get("strikeout", False)),
-                    source_height=source_height))
+                    source_height=source_height, selected=ent.selected))
 
     if include_measurements:
         for index, m in enumerate(doc.measurements):
@@ -189,6 +191,11 @@ def build(doc: DwgDocument, *, dark: bool = False, monochrome: bool = False,
                                           height=_annotation_height(doc),
                                           color=acolor, annotation=True,
                                           lines=lines or [label]))
+    # Cache each stroke's model-space bbox once.  The screen painter uses it
+    # for O(1) viewport culling on every pan / zoom frame; the PDF path never
+    # culls and simply ignores the field.
+    for path in dl.paths:
+        path.bounds = g.bounds_of(path.points)
     dl.bounds = doc.bounds(only_visible=only_visible)
     dominant, _ = doc.robust_bounds()
     dl.fit_bounds = dominant or dl.bounds
